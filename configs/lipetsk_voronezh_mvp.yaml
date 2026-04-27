@@ -1,0 +1,107 @@
+project:
+  name: deep_earth_degasation_mvp
+  version: "0.1"
+
+aoi:
+  name: lipetsk_voronezh_pilot
+  input_geojson: data/aoi/aoi.geojson
+
+time:
+  start_year: 2019
+  end_year: 2026
+  vegetation_months: [4, 5, 6, 7, 8, 9]
+  bare_soil_months: [3, 4, 10, 11]
+
+land_cover:
+  classes:
+    cropland: [crops]
+    forest: [trees]
+    grassland_fallow: [grass, shrub_and_scrub]
+    water_wetland: [water, flooded_vegetation]
+    built_up: [built]
+  mixed_candidate_min_classes: 2
+
+object_constraints:
+  min_diameter_m: 40
+  max_diameter_m: 1500
+  min_area_ha: 0.1
+  max_area_ha: 200
+  min_distance_to_field_edge_m: 20
+
+sentinel2:
+  cloud_threshold: 30
+  indices: [NDVI, NDMI, NDWI, MSI, BSI, brightness, red_edge]
+
+sentinel1:
+  features: [VV, VH, VV_VH_ratio, temporal_difference]
+
+landsat:
+  features: [LST]
+
+normalization:
+  cropland_method: field_level_robust_zscore
+  forest_method: local_neighborhood_robust_zscore
+  center: median
+  scale: MAD
+
+static_ring_detector:
+  enabled: true
+  circularity_min: 0.45
+  ringness_min: 0.10
+  multiscale_radii_m: [50, 75, 100, 150, 250, 500, 1000]
+
+dynamic_detector:
+  anomaly_percentile: 95
+  min_valid_observations_per_season: 4
+  min_repeated_seasons: 2
+  connected_components: true
+  morphology_filter: true
+
+false_positive_filters:
+  use_penalties: true
+  flag_roads: true
+  flag_water: true
+  flag_builtup: true
+  flag_field_edges: true
+  flag_linear_objects: true
+  flag_cloud_shadows: true
+  flag_harvest_patterns: true
+  flag_forest_clearcuts: true
+  flag_forest_roads: true
+  flag_wetlands: true
+  flag_quarries: true
+
+scoring:
+  cropland:
+    moisture_weight: 0.20
+    vegetation_weight: 0.15
+    brightness_weight: 0.15
+    thermal_weight: 0.10
+    sar_weight: 0.10
+    morphology_weight: 0.10
+    persistence_weight: 0.10
+    post_rain_weight: 0.05
+    geology_weight: 0.05
+  forest:
+    morphology_weight: 0.25
+    canopy_structure_weight: 0.15
+    canopy_moisture_weight: 0.15
+    dem_weight: 0.15
+    sar_weight: 0.10
+    persistence_weight: 0.10
+    geology_weight: 0.05
+    cluster_adjacency_weight: 0.05
+  mixed:
+    object_integrity_weight: 0.25
+    morphology_weight: 0.20
+    cropland_signal_weight: 0.15
+    forest_signal_weight: 0.15
+    sar_weight: 0.10
+    dem_weight: 0.10
+    geology_weight: 0.05
+
+outputs:
+  candidates_top_n: 30
+  export_geojson: true
+  export_csv: true
+  generate_passports: true
