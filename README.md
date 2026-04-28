@@ -4,7 +4,7 @@ Public implementation repository for the Deep Earth Degasation MVP.
 
 ## Current status
 
-Initial public skeleton/scaffold. Core helpers, scoring primitives, public configuration and tests are present. Full data ingestion, candidate extraction, passport generation and training dataset preparation are not yet implemented.
+Initial public skeleton/scaffold. Core helpers, scoring primitives, a geometry-only static candidate extraction scaffold, public configuration and tests are present. Raster ingestion, full candidate extraction, passport generation and training dataset preparation are not yet implemented.
 
 The system does **not** directly detect molecular hydrogen. It produces candidate objects that require expert and/or field validation.
 
