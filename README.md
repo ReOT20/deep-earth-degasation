@@ -31,12 +31,18 @@ Run the public synthetic static candidate artifact path with:
       --config configs/lipetsk_voronezh_mvp.yaml
 
 This command reads only supplied GeoJSON polygon or multipolygon geometries,
-runs the static morphology scaffold, and writes `candidates.geojson` and
-`candidate_scores.csv`. Input coordinates must already be projected in metres;
-lon/lat GeoJSON such as EPSG:4326, CRS84 or WGS84 is rejected because automatic
-reprojection is not implemented. The command does not ingest raster data, run
-dynamic anomaly detection, directly detect H2, prove active degassing, or
-perform field validation.
+runs the static morphology scaffold, and writes:
+
+- `candidates.geojson`
+- `candidate_scores.csv`
+- `passports/*.md`
+- `labeling_table.csv`
+
+Input coordinates must already be projected in metres; lon/lat GeoJSON such as
+EPSG:4326, CRS84 or WGS84 is rejected because automatic reprojection is not
+implemented. The command does not ingest raster data, run dynamic anomaly
+detection, directly detect H2, prove active degassing, or perform field
+validation.
 
 ## Development checks
 

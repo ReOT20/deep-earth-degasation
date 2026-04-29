@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import json
+import re
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -10,10 +12,12 @@ from shapely.geometry.base import BaseGeometry
 
 from deep_earth_degasation.config import load_config
 from deep_earth_degasation.io.candidates import write_candidate_artifacts
+from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.morphology.static_detector import (
     StaticDetectorConfig,
     extract_static_candidates,
 )
+from deep_earth_degasation.reports.passport import write_candidate_passport
 
 app = typer.Typer(help="Deep Earth Degasation MVP utilities")
 
@@ -83,8 +87,43 @@ def static_candidates(
         "Geometry-only static candidate artifacts written. "
         "These are review candidates, not direct H2 detections or proof of active degassing."
     )
+    score_rows = _read_score_rows(artifact_paths.candidate_scores_csv)
+    passports_dir = output_dir / "passports"
+    passport_paths = _passport_paths(score_rows, passports_dir)
+    for score_row, passport_path in zip(score_rows, passport_paths, strict=True):
+        write_candidate_passport(score_row, passport_path)
+    labeling_table_path = output_dir / "labeling_table.csv"
+    write_labeling_table(score_rows, labeling_table_path)
     typer.echo(f"candidates_geojson={artifact_paths.candidates_geojson}")
     typer.echo(f"candidate_scores_csv={artifact_paths.candidate_scores_csv}")
+    typer.echo(f"passports_dir={passports_dir}")
+    typer.echo(f"labeling_table_csv={labeling_table_path}")
+
+
+def _read_score_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as file:
+        return list(csv.DictReader(file))
+
+
+def _passport_paths(score_rows: list[dict[str, str]], passports_dir: Path) -> list[Path]:
+    seen: dict[str, int] = {}
+    paths: list[Path] = []
+    for score_row in score_rows:
+        stem = _safe_filename_stem(score_row.get("candidate_id", ""), score_row.get("rank", ""))
+        count = seen.get(stem, 0)
+        seen[stem] = count + 1
+        if count > 0:
+            stem = f"{stem}-{count + 1}"
+        paths.append(passports_dir / f"{stem}.md")
+    return paths
+
+
+def _safe_filename_stem(candidate_id: str, rank: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate_id).strip(" ._")
+    if stem in {"", ".", ".."}:
+        rank_suffix = re.sub(r"[^A-Za-z0-9._-]+", "_", rank).strip(" ._")
+        return f"candidate_{rank_suffix or 'unknown'}"
+    return stem
 
 
 def _load_geojson_geometries(path: Path) -> tuple[list[BaseGeometry], list[str]]:
