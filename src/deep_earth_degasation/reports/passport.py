@@ -26,6 +26,7 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
     )
     false_positive_flags = _json_list_text(score_row, "false_positive_flags")
     flags = _json_list_text(score_row, "flags")
+    source_context = _source_context_lines(score_row)
 
     return "\n".join(
         [
@@ -37,6 +38,7 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
             f"- `rank`: {rank}",
             f"- `priority_class`: {priority_class}",
             "",
+            *source_context,
             "## Interpretation Guardrail",
             "",
             GUARDRAIL_TEXT,
@@ -115,3 +117,20 @@ def _json_list_text(row: Mapping[str, object], key: str) -> str:
     if isinstance(parsed, list):
         return ", ".join(str(item) for item in parsed)
     return str(parsed)
+
+
+def _source_context_lines(score_row: Mapping[str, object]) -> list[str]:
+    source_fields = [
+        ("source_landcover_context", _text(score_row, "source_landcover_context")),
+        ("source_morphology_type", _text(score_row, "source_morphology_type")),
+        ("source_false_positive_risk", _text(score_row, "source_false_positive_risk")),
+        ("source_notes", _text(score_row, "source_notes")),
+    ]
+    if not any(value for _, value in source_fields):
+        return []
+    return [
+        "## Source Context",
+        "",
+        *[f"- `{field}`: {value}" for field, value in source_fields],
+        "",
+    ]

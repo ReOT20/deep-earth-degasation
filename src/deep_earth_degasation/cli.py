@@ -11,7 +11,7 @@ from shapely.geometry import MultiPolygon, Polygon, shape
 from shapely.geometry.base import BaseGeometry
 
 from deep_earth_degasation.config import load_config
-from deep_earth_degasation.io.candidates import write_candidate_artifacts
+from deep_earth_degasation.io.candidates import SourceProperties, write_candidate_artifacts
 from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.morphology.static_detector import (
     StaticDetectorConfig,
@@ -76,13 +76,13 @@ def static_candidates(
     ] = Path("configs/lipetsk_voronezh_mvp.yaml"),
 ) -> None:
     """Run geometry-only static candidate extraction on metre coordinates."""
-    geometries, candidate_ids = _load_geojson_geometries(input_path)
+    geometries, candidate_ids, source_properties = _load_geojson_geometries(input_path)
     config = load_config(config_path)
     detector_config = _static_detector_config(config.object_constraints)
     candidates = extract_static_candidates(
         geometries, candidate_ids=candidate_ids, config=detector_config
     )
-    artifact_paths = write_candidate_artifacts(candidates, output_dir)
+    artifact_paths = write_candidate_artifacts(candidates, output_dir, source_properties)
     typer.echo(
         "Geometry-only static candidate artifacts written. "
         "These are review candidates, not direct H2 detections or proof of active degassing."
@@ -126,12 +126,13 @@ def _safe_filename_stem(candidate_id: str, rank: str) -> str:
     return stem
 
 
-def _load_geojson_geometries(path: Path) -> tuple[list[BaseGeometry], list[str]]:
+def _load_geojson_geometries(path: Path) -> tuple[list[BaseGeometry], list[str], SourceProperties]:
     data = json.loads(path.read_text(encoding="utf-8"))
     _reject_declared_geographic_crs(data)
     features = _geojson_features(data)
     geometries: list[BaseGeometry] = []
     candidate_ids: list[str] = []
+    source_properties: SourceProperties = []
 
     for index, feature in enumerate(features, start=1):
         geometry_data = feature.get("geometry")
@@ -144,13 +145,15 @@ def _load_geojson_geometries(path: Path) -> tuple[list[BaseGeometry], list[str]]
             )
         if geometry.is_empty:
             raise typer.BadParameter(f"Feature {index} has empty geometry.")
+        candidate_id = _candidate_id(feature, index)
         geometries.append(geometry)
-        candidate_ids.append(_candidate_id(feature, index))
+        candidate_ids.append(candidate_id)
+        source_properties.append(_feature_properties(feature, index))
 
     if not geometries:
         raise typer.BadParameter("Input GeoJSON contains no candidate geometries.")
     _reject_lonlat_like_geometries(geometries)
-    return geometries, candidate_ids
+    return geometries, candidate_ids, source_properties
 
 
 def _reject_declared_geographic_crs(data: dict[str, Any]) -> None:
@@ -196,13 +199,18 @@ def _require_feature(value: object, index: int) -> dict[str, Any]:
 
 
 def _candidate_id(feature: dict[str, Any], index: int) -> str:
-    properties = feature.get("properties") or {}
-    if not isinstance(properties, dict):
-        raise typer.BadParameter(f"Feature {index} properties must be an object.")
+    properties = _feature_properties(feature, index)
     candidate_id = properties.get("candidate_id") or feature.get("id")
     if candidate_id is None:
         return f"static-{index:06d}"
     return str(candidate_id)
+
+
+def _feature_properties(feature: dict[str, Any], index: int) -> dict[str, object]:
+    properties = feature.get("properties") or {}
+    if not isinstance(properties, dict):
+        raise typer.BadParameter(f"Feature {index} properties must be an object.")
+    return properties
 
 
 def _static_detector_config(object_constraints: Any) -> StaticDetectorConfig:

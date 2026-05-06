@@ -38,6 +38,33 @@ def test_writes_valid_candidate_geojson(tmp_path: Path) -> None:
     assert feature["geometry"]["type"] == "Polygon"
 
 
+def test_candidate_geojson_preserves_source_context(tmp_path: Path) -> None:
+    circle = Point(0.0, 0.0).buffer(50.0, quad_segs=32)
+    candidate = extract_static_candidates([circle], candidate_ids=["pilot-001"])[0]
+    output_path = tmp_path / "candidates.geojson"
+
+    write_candidates_geojson(
+        [candidate],
+        output_path,
+        source_properties=[
+            {
+                "landcover_context": "cropland",
+                "morphology_type": "ring",
+                "false_positive_risk": "field_edge",
+                "notes": "QGIS review note",
+            }
+        ],
+    )
+
+    data = json.loads(output_path.read_text(encoding="utf-8"))
+    properties = data["features"][0]["properties"]
+    assert properties["morphology_type"] == "circle"
+    assert properties["source_landcover_context"] == "cropland"
+    assert properties["source_morphology_type"] == "ring"
+    assert properties["source_false_positive_risk"] == "field_edge"
+    assert properties["source_notes"] == "QGIS review note"
+
+
 def test_writes_candidate_scores_csv_that_csv_tools_can_read(tmp_path: Path) -> None:
     ring = Polygon(
         [(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0), (-50.0, 50.0)],
@@ -57,6 +84,34 @@ def test_writes_candidate_scores_csv_that_csv_tools_can_read(tmp_path: Path) -> 
     assert rows[0]["priority_class"] == "A"
     assert rows[0]["dynamic_score"] == ""
     assert rows[0]["dominant_evidence"] == "ring morphology"
+
+
+def test_candidate_scores_csv_preserves_source_context(tmp_path: Path) -> None:
+    circle = Point(0.0, 0.0).buffer(50.0, quad_segs=32)
+    candidate = extract_static_candidates([circle], candidate_ids=["pilot-001"])[0]
+    output_path = tmp_path / "candidate_scores.csv"
+
+    write_candidate_scores_csv(
+        [candidate],
+        output_path,
+        source_properties=[
+            {
+                "landcover_context": "cropland",
+                "morphology_type": "ring",
+                "false_positive_risk": "field_edge",
+                "notes": "QGIS review note",
+            }
+        ],
+    )
+
+    with output_path.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+
+    assert rows[0]["morphology_type"] == "circle"
+    assert rows[0]["source_landcover_context"] == "cropland"
+    assert rows[0]["source_morphology_type"] == "ring"
+    assert rows[0]["source_false_positive_risk"] == "field_edge"
+    assert rows[0]["source_notes"] == "QGIS review note"
 
 
 def test_candidate_scores_csv_ranks_candidates_by_static_score(tmp_path: Path) -> None:

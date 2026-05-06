@@ -16,6 +16,10 @@ def _score_row() -> dict[str, object]:
         "rank": 1,
         "priority_class": "A",
         "morphology_type": "ring",
+        "source_landcover_context": "cropland",
+        "source_morphology_type": "ring",
+        "source_false_positive_risk": "field_edge",
+        "source_notes": "QGIS review note",
         "static_score": 0.95,
         "dynamic_score": "",
         "dominant_evidence": "ring morphology",
@@ -31,6 +35,10 @@ def test_score_row_to_labeling_row_exports_required_fields() -> None:
     assert row["rank"] == "1"
     assert row["priority_class"] == "A"
     assert row["morphology_type"] == "ring"
+    assert row["source_landcover_context"] == "cropland"
+    assert row["source_morphology_type"] == "ring"
+    assert row["source_false_positive_risk"] == "field_edge"
+    assert row["source_notes"] == "QGIS review note"
     assert row["static_score"] == "0.95"
     assert row["dynamic_score"] == ""
     assert row["dominant_evidence"] == "ring morphology"

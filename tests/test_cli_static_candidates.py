@@ -21,7 +21,13 @@ def test_static_candidates_command_writes_artifacts(tmp_path: Path) -> None:
                 "features": [
                     {
                         "type": "Feature",
-                        "properties": {"candidate_id": "low-score-first"},
+                        "properties": {
+                            "candidate_id": "low-score-first",
+                            "landcover_context": "cropland",
+                            "morphology_type": "ring",
+                            "false_positive_risk": "field_edge",
+                            "notes": "QGIS source note",
+                        },
                         "geometry": {
                             "type": "Polygon",
                             "coordinates": [
@@ -103,6 +109,11 @@ def test_static_candidates_command_writes_artifacts(tmp_path: Path) -> None:
     assert rows[0]["candidate_id"] == "high-score-second"
     assert rows[1]["rank"] == "2"
     assert rows[1]["candidate_id"] == "low-score-first"
+    assert rows[1]["morphology_type"] == "irregular"
+    assert rows[1]["source_landcover_context"] == "cropland"
+    assert rows[1]["source_morphology_type"] == "ring"
+    assert rows[1]["source_false_positive_risk"] == "field_edge"
+    assert rows[1]["source_notes"] == "QGIS source note"
 
     passport = passport_path.read_text(encoding="utf-8")
     assert "not direct H2 detection" in passport
@@ -112,6 +123,8 @@ def test_static_candidates_command_writes_artifacts(tmp_path: Path) -> None:
         labeling_rows = list(csv.DictReader(file))
 
     assert labeling_rows[0]["candidate_id"] == "high-score-second"
+    assert labeling_rows[1]["source_landcover_context"] == "cropland"
+    assert labeling_rows[1]["source_morphology_type"] == "ring"
     assert labeling_rows[0]["expert_label"] == ""
     assert labeling_rows[0]["reviewer_notes"] == ""
     assert "hard_negative" not in labeling_rows[0].values()
@@ -227,6 +240,97 @@ def test_static_candidates_sanitizes_passport_filenames(tmp_path: Path) -> None:
     with (output_dir / "labeling_table.csv").open(newline="", encoding="utf-8") as file:
         labeling_rows = list(csv.DictReader(file))
     assert {row["candidate_id"] for row in labeling_rows} == {"../../owned", "..__owned"}
+
+
+def test_static_candidates_preserves_source_context_for_duplicate_ids(tmp_path: Path) -> None:
+    input_path = tmp_path / "duplicate-ids.geojson"
+    output_dir = tmp_path / "artifacts"
+    input_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "candidate_id": "duplicate-id",
+                            "morphology_type": "irregular",
+                            "notes": "first duplicate source note",
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [500000.0, 5600000.0],
+                                    [500120.0, 5600000.0],
+                                    [500095.0, 5600035.0],
+                                    [500140.0, 5600090.0],
+                                    [500045.0, 5600065.0],
+                                    [500000.0, 5600120.0],
+                                    [500000.0, 5600000.0],
+                                ]
+                            ],
+                        },
+                    },
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "candidate_id": "duplicate-id",
+                            "morphology_type": "ring",
+                            "notes": "second duplicate source note",
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [499950.0, 5599950.0],
+                                    [500050.0, 5599950.0],
+                                    [500050.0, 5600050.0],
+                                    [499950.0, 5600050.0],
+                                    [499950.0, 5599950.0],
+                                ],
+                                [
+                                    [499985.0, 5599985.0],
+                                    [500015.0, 5599985.0],
+                                    [500015.0, 5600015.0],
+                                    [499985.0, 5599985.0],
+                                ],
+                            ],
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "static-candidates",
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output_dir),
+            "--config",
+            "configs/lipetsk_voronezh_mvp.yaml",
+        ],
+    )
+
+    assert result.exit_code == 0
+    with (output_dir / "candidate_scores.csv").open(newline="", encoding="utf-8") as file:
+        score_rows = list(csv.DictReader(file))
+
+    assert [row["candidate_id"] for row in score_rows] == ["duplicate-id", "duplicate-id"]
+    assert score_rows[0]["source_morphology_type"] == "ring"
+    assert score_rows[0]["source_notes"] == "second duplicate source note"
+    assert score_rows[1]["source_morphology_type"] == "irregular"
+    assert score_rows[1]["source_notes"] == "first duplicate source note"
+
+    first_passport = (output_dir / "passports" / "duplicate-id.md").read_text(encoding="utf-8")
+    second_passport = (output_dir / "passports" / "duplicate-id-2.md").read_text(encoding="utf-8")
+    assert "second duplicate source note" in first_passport
+    assert "first duplicate source note" in second_passport
 
 
 def test_static_candidates_rejects_empty_feature_collection(tmp_path: Path) -> None:

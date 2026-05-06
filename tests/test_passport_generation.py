@@ -14,6 +14,10 @@ def _score_row() -> dict[str, object]:
         "priority_class": "A",
         "candidate_id": "candidate-001",
         "morphology_type": "ring",
+        "source_landcover_context": "cropland",
+        "source_morphology_type": "ellipse",
+        "source_false_positive_risk": "field_edge",
+        "source_notes": "QGIS review note",
         "static_score": 0.95,
         "dynamic_score": "",
         "area_m2": 10_000.0,
@@ -34,6 +38,11 @@ def test_render_candidate_passport_includes_static_candidate_context() -> None:
     assert "`rank`: 1" in markdown
     assert "`priority_class`: A" in markdown
     assert "`morphology_type`: ring" in markdown
+    assert "Source Context" in markdown
+    assert "`source_landcover_context`: cropland" in markdown
+    assert "`source_morphology_type`: ellipse" in markdown
+    assert "`source_false_positive_risk`: field_edge" in markdown
+    assert "`source_notes`: QGIS review note" in markdown
     assert "`static_score`: 0.95" in markdown
     assert "ring morphology" in markdown
     assert "False-Positive Review" in markdown
