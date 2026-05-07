@@ -1,0 +1,1 @@
+"""Spatial context assignment helpers."""
