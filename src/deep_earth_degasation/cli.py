@@ -10,7 +10,7 @@ import typer
 from shapely.geometry import MultiPolygon, Polygon, shape
 from shapely.geometry.base import BaseGeometry
 
-from deep_earth_degasation.config import load_config
+from deep_earth_degasation.config import MVPConfig, load_config, resolved_config_dict
 from deep_earth_degasation.io.candidates import SourceProperties, write_candidate_artifacts
 from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.morphology.static_detector import (
@@ -26,7 +26,7 @@ app = typer.Typer(help="Deep Earth Degasation MVP utilities")
 def validate_config(config_path: Path) -> None:
     """Validate a YAML configuration file."""
     config = load_config(config_path)
-    typer.echo(config.model_dump_json(indent=2))
+    typer.echo(json.dumps(resolved_config_dict(config), indent=2))
 
 
 @app.command()
@@ -78,7 +78,7 @@ def static_candidates(
     """Run geometry-only static candidate extraction on metre coordinates."""
     geometries, candidate_ids, source_properties = _load_geojson_geometries(input_path)
     config = load_config(config_path)
-    detector_config = _static_detector_config(config.object_constraints)
+    detector_config = _static_detector_config(config)
     candidates = extract_static_candidates(
         geometries, candidate_ids=candidate_ids, config=detector_config
     )
@@ -213,12 +213,15 @@ def _feature_properties(feature: dict[str, Any], index: int) -> dict[str, object
     return properties
 
 
-def _static_detector_config(object_constraints: Any) -> StaticDetectorConfig:
+def _static_detector_config(config: MVPConfig) -> StaticDetectorConfig:
+    object_constraints = config.object_constraints
+    static_config = config.static_ring_detector
     return StaticDetectorConfig(
         min_diameter_m=object_constraints.min_diameter_m,
         max_diameter_m=object_constraints.max_diameter_m,
         min_area=object_constraints.min_area_ha * 10_000.0,
         max_area=object_constraints.max_area_ha * 10_000.0,
+        ellipse_min_circularity=static_config.circularity_min,
     )
 
 

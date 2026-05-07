@@ -70,6 +70,12 @@ known_sites
 
 Metric operations require a projected CRS in metres. Lon/lat inputs must be rejected unless an explicit reprojection target and reprojection setting are provided.
 
+## Config policy
+
+Public YAML configs are strict. Unknown keys fail validation unless they are inside an explicit `metadata` or `provenance` map.
+
+The current geometry-only static baseline keeps `object_constraints.max_diameter_m: 1500` because the first private static pilot and existing static examples were reviewed with that broader limit. The dynamic prepared-data template uses `max_diameter_m: 1000` as a stricter first-pass review default for field-normalized anomaly objects. This is a phase-specific threshold decision, not a conflicting unit convention.
+
 ## Data privacy policy
 
 Private AOIs, field boundaries, QGIS seed geometries and generated private pilot outputs should remain in the control-plane/private repository or ignored output directories. Public examples must use synthetic coordinates or non-sensitive public samples only.
