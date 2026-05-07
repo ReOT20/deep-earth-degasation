@@ -1,0 +1,119 @@
+run:
+  id: lipetsk_voronezh_dynamic_pilot_template
+  description: Template prepared-data manifest for the dynamic MVP.
+  created_by: replace_me
+  notes: Do not commit private real raster paths or private AOI details to the public repository.
+
+crs: EPSG:32637
+resolution_m: 10
+
+aoi:
+  path: data/aoi/aoi.geojson
+  crs: EPSG:32637
+
+vectors:
+  fields:
+    path: data/context/fields.geojson
+    crs: EPSG:32637
+    role: fields
+    required: true
+    id_field: field_id
+  roads:
+    path: data/context/roads.geojson
+    crs: EPSG:32637
+    role: roads
+    required: false
+  water:
+    path: data/context/water.geojson
+    crs: EPSG:32637
+    role: water
+    required: false
+  built_up:
+    path: data/context/built_up.geojson
+    crs: EPSG:32637
+    role: built_up
+    required: false
+  excluded_zones:
+    path: data/context/excluded_zones.geojson
+    crs: EPSG:32637
+    role: excluded_zones
+    required: false
+  known_sites:
+    path: data/context/known_sites.geojson
+    crs: EPSG:32637
+    role: known_sites
+    required: false
+
+raster_layers:
+  - id: s2_ndvi_2024_05_15
+    sensor: sentinel2
+    feature_name: NDVI
+    date: 2024-05-15
+    path: data/prepared/sentinel2/2024-05-15_NDVI.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    quality_mask_path: data/prepared/sentinel2/2024-05-15_valid_mask.tif
+    role: input_feature
+
+  - id: s2_ndmi_2024_05_15
+    sensor: sentinel2
+    feature_name: NDMI
+    date: 2024-05-15
+    path: data/prepared/sentinel2/2024-05-15_NDMI.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    quality_mask_path: data/prepared/sentinel2/2024-05-15_valid_mask.tif
+    role: input_feature
+
+  - id: s2_bsi_2024_05_15
+    sensor: sentinel2
+    feature_name: BSI
+    date: 2024-05-15
+    path: data/prepared/sentinel2/2024-05-15_BSI.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    quality_mask_path: data/prepared/sentinel2/2024-05-15_valid_mask.tif
+    role: input_feature
+
+  - id: s1_vv_2024_05_16
+    sensor: sentinel1
+    feature_name: VV
+    date: 2024-05-16
+    path: data/prepared/sentinel1/2024-05-16_VV.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    role: input_feature
+
+  - id: s1_vh_2024_05_16
+    sensor: sentinel1
+    feature_name: VH
+    date: 2024-05-16
+    path: data/prepared/sentinel1/2024-05-16_VH.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    role: input_feature
+
+  - id: landsat_lst_2024_05_17
+    sensor: landsat
+    feature_name: LST
+    date: 2024-05-17
+    path: data/prepared/landsat/2024-05-17_LST.tif
+    crs: EPSG:32637
+    resolution_m: 30
+    nodata: -9999
+    role: input_feature
+
+quality:
+  reject_mismatched_crs: true
+  reject_mismatched_grid: true
+  allow_resampling: false
+  min_valid_observations_per_season: 4
+
+notes:
+  - This is a template. Replace paths with private prepared rasters in the private/control-plane repository.
+  - Public repository examples should remain synthetic or non-sensitive.

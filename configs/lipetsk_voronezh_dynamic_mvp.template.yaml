@@ -1,0 +1,196 @@
+project:
+  name: deep_earth_degasation_dynamic_mvp
+  version: "0.2-template"
+  mode: prepared_data_dynamic_mvp
+  claim_guardrail: candidate_ranking_not_direct_h2_detection
+
+aoi:
+  name: lipetsk_voronezh_dynamic_pilot
+  input_geojson: data/aoi/aoi.geojson
+  metric_crs: EPSG:32637
+
+time:
+  start_year: 2019
+  end_year: 2026
+  vegetation_months: [4, 5, 6, 7, 8, 9]
+  bare_soil_months: [3, 4, 10, 11]
+  minimum_repeated_seasons: 2
+
+prepared_data:
+  raster_stack_manifest: data/manifests/prepared_stack_manifest.yaml
+  reject_lonlat_for_metric_operations: true
+  allow_reprojection: false
+  allow_resampling: false
+
+vectors:
+  fields:
+    path: data/context/fields.geojson
+    required: true
+    id_field: field_id
+  landcover:
+    path: data/context/landcover.geojson
+    required: false
+  roads:
+    path: data/context/roads.geojson
+    required: false
+  water:
+    path: data/context/water.geojson
+    required: false
+  built_up:
+    path: data/context/built_up.geojson
+    required: false
+  excluded_zones:
+    path: data/context/excluded_zones.geojson
+    required: false
+  geology:
+    path: data/context/geology.geojson
+    required: false
+  known_sites:
+    path: data/context/known_sites.geojson
+    required: false
+
+land_cover:
+  primary_branch: cropland
+  classes:
+    cropland: [crops]
+    forest: [trees]
+    grassland_fallow: [grass, shrub_and_scrub]
+    water_wetland: [water, flooded_vegetation]
+    built_up: [built]
+  mixed_candidate_min_classes: 2
+
+object_constraints:
+  min_diameter_m: 40
+  max_diameter_m: 1000
+  min_area_ha: 0.1
+  max_area_ha: 80
+  min_distance_to_field_edge_m: 20
+
+features:
+  sentinel2:
+    indices: [NDVI, NDMI, NDWI, MSI, BSI, brightness]
+    optional_indices: [red_edge, EVI]
+    cloud_threshold: 30
+  sentinel1:
+    features: [VV, VH, VV_VH_ratio, temporal_difference]
+  landsat:
+    features: [LST]
+  weather:
+    features: [rainfall, days_since_rain]
+
+normalization:
+  cropland_method: field_level_robust_zscore
+  center: median
+  scale: MAD
+  min_valid_pixels_per_field_date: 100
+  mad_epsilon: 1.0e-6
+  missing_field_policy: flag_and_skip
+
+anomaly_components:
+  moisture:
+    inputs: [NDMI, NDWI, MSI]
+    high_score_means: local_dryness_or_moisture_stress
+    weight: 0.18
+  vegetation_stress:
+    inputs: [NDVI]
+    high_score_means: local_vegetation_stress
+    weight: 0.14
+  soil_brightness:
+    inputs: [BSI, brightness]
+    high_score_means: local_soil_brightening
+    weight: 0.14
+  sar:
+    inputs: [VV, VH, VV_VH_ratio]
+    high_score_means: local_sar_anomaly
+    weight: 0.12
+  thermal:
+    inputs: [LST]
+    high_score_means: local_thermal_anomaly
+    weight: 0.10
+  morphology:
+    inputs: [circularity, ringness, elongation]
+    high_score_means: circular_or_ring_like_object
+    weight: 0.12
+  persistence:
+    inputs: [anomalous_dates, repeated_seasons]
+    high_score_means: repeated_anomaly
+    weight: 0.10
+  post_rain_drying:
+    inputs: [days_since_rain, moisture_anomaly]
+    high_score_means: accelerated_post_rain_drying
+    weight: 0.06
+  geology_context:
+    inputs: [fault_distance, lineament_distance, known_site_distance]
+    high_score_means: supportive_context
+    weight: 0.04
+
+dynamic_detector:
+  anomaly_percentile: 95
+  connected_components: true
+  morphology_filter: true
+  min_valid_observations_per_season: 4
+  min_repeated_seasons: 2
+  merge_distance_m: 30
+  merge_across_dates: true
+
+false_positive_filters:
+  use_penalties: true
+  flag_roads: true
+  road_buffer_m: 20
+  flag_water: true
+  water_buffer_m: 20
+  flag_builtup: true
+  builtup_buffer_m: 50
+  flag_field_edges: true
+  field_edge_buffer_m: 20
+  flag_linear_objects: true
+  max_elongation_without_penalty: 4.0
+  flag_cloud_shadows: true
+  flag_harvest_patterns: true
+  flag_irrigation: true
+  flag_quarries: true
+  missing_context_policy: add_missing_data_flag
+
+scoring:
+  priority_thresholds:
+    A: 0.75
+    B: 0.55
+    C: 0.35
+    D: 0.00
+  cropland:
+    moisture_weight: 0.18
+    vegetation_weight: 0.14
+    brightness_weight: 0.14
+    sar_weight: 0.12
+    thermal_weight: 0.10
+    morphology_weight: 0.12
+    persistence_weight: 0.10
+    post_rain_weight: 0.06
+    geology_weight: 0.04
+  penalties:
+    field_edge: 0.20
+    road: 0.30
+    water: 0.30
+    built_up: 0.35
+    quarry: 0.40
+    linear_object: 0.25
+    cloud_shadow: 0.20
+    harvest_pattern: 0.20
+
+validation:
+  top_n: 20
+  known_site_recall_top_n: [10, 20, 50]
+  expert_precision_top_n: 20
+  export_false_positive_counts: true
+  do_not_treat_unlabeled_as_negative: true
+
+outputs:
+  output_dir: outputs/lipetsk_voronezh_dynamic_pilot
+  candidates_top_n: 30
+  export_geojson: true
+  export_csv: true
+  generate_passports: true
+  generate_quicklooks: true
+  export_time_series: true
+  export_validation_summary: true
+  export_resolved_config: true
