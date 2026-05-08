@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -79,6 +80,10 @@ def _best_dynamic_match(
 def _static_dynamic_row(static_candidate: StaticCandidate, dynamic_row: Any) -> dict[str, Any]:
     dynamic_object_id = _dynamic_object_id(dynamic_row)
     geometry = static_candidate.geometry.union(dynamic_row.geometry)
+    false_positive_flags = sorted(
+        set(_static_false_positive_flags(static_candidate))
+        | set(_list_value(dynamic_row, "false_positive_flags"))
+    )
     return {
         **_static_fields(static_candidate),
         **_dynamic_fields(dynamic_row),
@@ -88,6 +93,9 @@ def _static_dynamic_row(static_candidate: StaticCandidate, dynamic_row: Any) -> 
         "source_dynamic_object_id": dynamic_object_id,
         "source_static_candidate_ids": (static_candidate.candidate_id,),
         "source_dynamic_object_ids": (dynamic_object_id,),
+        "false_positive_flags": tuple(false_positive_flags),
+        "false_positive_penalty": _float_value(dynamic_row, "false_positive_penalty", default=0.0),
+        "missing_data_flags": tuple(_list_value(dynamic_row, "missing_data_flags")),
         "geometry": geometry,
     }
 
@@ -102,6 +110,9 @@ def _static_only_row(static_candidate: StaticCandidate) -> dict[str, Any]:
         "source_dynamic_object_id": "",
         "source_static_candidate_ids": (static_candidate.candidate_id,),
         "source_dynamic_object_ids": (),
+        "false_positive_flags": tuple(_static_false_positive_flags(static_candidate)),
+        "false_positive_penalty": 0.0,
+        "missing_data_flags": (),
         "geometry": static_candidate.geometry,
     }
 
@@ -144,6 +155,9 @@ def _dynamic_fields(dynamic_row: Any) -> dict[str, Any]:
         "dynamic_object_flags": tuple(_row_value(dynamic_row, "dynamic_object_flags") or ()),
         "anomalous_dates": tuple(_row_value(dynamic_row, "anomalous_dates") or ()),
         "source_layer_ids": tuple(_row_value(dynamic_row, "source_layer_ids") or ()),
+        "false_positive_flags": tuple(_list_value(dynamic_row, "false_positive_flags")),
+        "false_positive_penalty": _float_value(dynamic_row, "false_positive_penalty", default=0.0),
+        "missing_data_flags": tuple(_list_value(dynamic_row, "missing_data_flags")),
     }
 
 
@@ -163,6 +177,27 @@ def _dynamic_object_id(dynamic_row: Any) -> str:
 
 def _row_value(row: Any, field_name: str) -> Any:
     return row[field_name] if field_name in row else None
+
+
+def _list_value(row: Any, field_name: str) -> tuple[Any, ...]:
+    value = _row_value(row, field_name)
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(value)
+
+
+def _float_value(row: Any, field_name: str, *, default: float) -> float:
+    value = _row_value(row, field_name)
+    if isinstance(value, int | float):
+        number = float(value)
+        return number if math.isfinite(number) else default
+    return default
+
+
+def _static_false_positive_flags(candidate: StaticCandidate) -> list[str]:
+    return [flag for flag in sorted(candidate.flags) if flag.endswith("_risk")]
 
 
 def _intersection_over_union(left: BaseGeometry, right: BaseGeometry) -> float:
@@ -189,6 +224,9 @@ def _empty_fused_candidates(crs: str | None) -> gpd.GeoDataFrame:
             "dynamic_object_flags": [],
             "anomalous_dates": [],
             "source_layer_ids": [],
+            "false_positive_flags": [],
+            "false_positive_penalty": [],
+            "missing_data_flags": [],
             "geometry": [],
         },
         geometry="geometry",

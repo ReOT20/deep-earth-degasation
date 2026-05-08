@@ -86,6 +86,25 @@ def test_unmatched_dynamic_object_remains_dynamic_only() -> None:
     assert fused["dynamic_max_anomaly"].iloc[0] == 2.0
 
 
+def test_fusion_preserves_false_positive_filter_outputs() -> None:
+    static_candidates = extract_static_candidates(
+        [Point(0, 0).buffer(30)],
+        candidate_ids=["static-match"],
+        landcover_context="built_up",
+    )
+    dynamic_objects = _dynamic_objects([("dynamic-match", Point(20, 0).buffer(25), 3.0)])
+    dynamic_objects["false_positive_flags"] = [["road_risk"]]
+    dynamic_objects["false_positive_penalty"] = [0.3]
+    dynamic_objects["missing_data_flags"] = [["missing_context_water"]]
+
+    fused = fuse_static_dynamic_candidates(static_candidates, dynamic_objects, crs=CRS)
+
+    matched = fused[fused["evidence_class"] == "static_dynamic"].iloc[0]
+    assert matched["false_positive_flags"] == ("built_up_risk", "road_risk")
+    assert matched["false_positive_penalty"] == 0.3
+    assert matched["missing_data_flags"] == ("missing_context_water",)
+
+
 def test_dynamic_object_is_not_reused_by_multiple_static_candidates() -> None:
     static_candidates = extract_static_candidates(
         [Point(0, 0).buffer(30), Point(20, 0).buffer(30)],
