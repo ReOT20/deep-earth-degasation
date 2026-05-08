@@ -79,6 +79,28 @@ def test_field_context_is_assigned_when_field_polygons_are_supplied() -> None:
     assert objects["field_context_flags"].iloc[0] == []
 
 
+def test_field_context_honors_custom_field_id_column() -> None:
+    data = _blank()
+    _draw_disk(data, center=(5, 5), radius=2, value=10.0)
+    field_ids = np.ones(data.shape, dtype=int)
+    fields = gpd.GeoDataFrame(
+        {"plot_code": ["plot-a"], "geometry": [box(0, 0, 100, 100)]},
+        crs=CRS,
+    )
+
+    objects = extract_dynamic_objects(
+        (_layer("NDMI", data),),
+        field_ids,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(),
+        fields=fields,
+        field_id_column="plot_code",
+    )
+
+    assert objects["field_id"].iloc[0] == "plot-a"
+
+
 def test_tiny_and_huge_components_are_flagged() -> None:
     tiny = _blank()
     tiny[5, 5] = 10.0

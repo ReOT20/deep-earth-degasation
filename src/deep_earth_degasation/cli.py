@@ -17,6 +17,8 @@ from deep_earth_degasation.morphology.static_detector import (
     StaticDetectorConfig,
     extract_static_candidates,
 )
+from deep_earth_degasation.pipeline.manifest import load_prepared_stack_manifest
+from deep_earth_degasation.pipeline.run_mvp import GUARDRAIL_MESSAGE, run_dynamic_mvp
 from deep_earth_degasation.reports.passport import write_candidate_passport
 
 app = typer.Typer(help="Deep Earth Degasation MVP utilities")
@@ -98,6 +100,57 @@ def static_candidates(
     typer.echo(f"candidate_scores_csv={artifact_paths.candidate_scores_csv}")
     typer.echo(f"passports_dir={passports_dir}")
     typer.echo(f"labeling_table_csv={labeling_table_path}")
+
+
+@app.command("run-mvp")
+def run_mvp(
+    config_path: Annotated[
+        Path,
+        typer.Option(
+            "--config",
+            "-c",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Dynamic MVP YAML config.",
+        ),
+    ],
+    data_manifest_path: Annotated[
+        Path,
+        typer.Option(
+            "--data-manifest",
+            "-m",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Prepared raster/vector stack manifest.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            "-o",
+            file_okay=False,
+            dir_okay=True,
+            help="Directory for dynamic MVP artifacts.",
+        ),
+    ],
+) -> None:
+    """Run the prepared-data dynamic MVP artifact pipeline."""
+    config = load_config(config_path)
+    manifest = load_prepared_stack_manifest(data_manifest_path)
+    paths = run_dynamic_mvp(config=config, manifest=manifest, output_dir=output_dir)
+    typer.echo(GUARDRAIL_MESSAGE)
+    typer.echo(f"candidates_geojson={paths.candidates_geojson}")
+    typer.echo(f"candidate_scores_csv={paths.candidate_scores_csv}")
+    typer.echo(f"labeling_table_csv={paths.labeling_table_csv}")
+    typer.echo(f"passports_dir={paths.passports_dir}")
+    typer.echo(f"time_series_dir={paths.time_series_dir}")
+    typer.echo(f"run_manifest_json={paths.run_manifest_json}")
+    typer.echo(f"resolved_config_json={paths.resolved_config_json}")
 
 
 def _read_score_rows(path: Path) -> list[dict[str, str]]:

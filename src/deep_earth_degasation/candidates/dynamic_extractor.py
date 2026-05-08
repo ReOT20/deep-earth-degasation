@@ -38,6 +38,7 @@ def extract_dynamic_objects(
     crs: str,
     config: DynamicExtractionConfig | None = None,
     fields: gpd.GeoDataFrame | None = None,
+    field_id_column: str = "field_id",
 ) -> gpd.GeoDataFrame:
     """Extract review candidate objects from field-normalized anomaly maps."""
     extraction_config = config or DynamicExtractionConfig()
@@ -71,7 +72,11 @@ def extract_dynamic_objects(
     detections_gdf = gpd.GeoDataFrame(detections, geometry="geometry", crs=crs)
     merged_gdf = _merge_repeated_detections(detections_gdf, extraction_config)
     if fields is not None and not merged_gdf.empty:
-        merged_gdf = assign_field_context(merged_gdf, fields)
+        merged_gdf = assign_field_context(
+            merged_gdf,
+            fields,
+            field_id_column=field_id_column,
+        )
     return merged_gdf
 
 
