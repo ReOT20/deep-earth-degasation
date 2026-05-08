@@ -147,6 +147,7 @@ def run_mvp(
     typer.echo(f"candidates_geojson={paths.candidates_geojson}")
     typer.echo(f"candidate_scores_csv={paths.candidate_scores_csv}")
     typer.echo(f"labeling_table_csv={paths.labeling_table_csv}")
+    typer.echo(f"validation_summary_json={paths.validation_summary_json}")
     typer.echo(f"passports_dir={paths.passports_dir}")
     typer.echo(f"time_series_dir={paths.time_series_dir}")
     typer.echo(f"run_manifest_json={paths.run_manifest_json}")

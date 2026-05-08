@@ -40,10 +40,12 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "ranked candidate surface anomalies" in result.output
     assert "not direct H2 detections" in result.output
+    assert "validation_summary_json=" in result.output
 
     candidates_geojson = output_dir / "candidates.geojson"
     candidate_scores_csv = output_dir / "candidate_scores.csv"
     labeling_table_csv = output_dir / "labeling_table.csv"
+    validation_summary_json = output_dir / "validation_summary.json"
     passports_dir = output_dir / "passports"
     time_series_dir = output_dir / "time_series"
     run_manifest = output_dir / "run_manifest.json"
@@ -54,6 +56,7 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
         candidates_geojson,
         candidate_scores_csv,
         labeling_table_csv,
+        validation_summary_json,
         run_manifest,
         resolved_config,
         anomaly_map,
@@ -72,6 +75,13 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert score_rows[0]["false_positive_flags"] != ""
     assert score_rows[0]["missing_data_flags"] != ""
     assert score_rows[0]["passport_path"].endswith(".md")
+
+    validation_summary = json.loads(validation_summary_json.read_text(encoding="utf-8"))
+    assert "not direct H2 detections" in validation_summary["guardrail"]
+    assert validation_summary["candidate_count"] == len(score_rows)
+    assert validation_summary["unlabeled_background_treated_as_negative"] is False
+    assert "missing_known_sites" in validation_summary["missing_data_flags"]
+    assert "missing_expert_labels" in validation_summary["missing_data_flags"]
 
     with labeling_table_csv.open(newline="", encoding="utf-8") as file:
         labeling_rows = list(csv.DictReader(file))
@@ -168,6 +178,13 @@ def _write_config(tmp_path: Path) -> Path:
                 "vegetation_weight": 0.3,
                 "brightness_weight": 0.3,
             },
+        },
+        "validation": {
+            "top_n": 20,
+            "known_site_recall_top_n": [1, 20],
+            "expert_precision_top_n": 20,
+            "export_false_positive_counts": True,
+            "do_not_treat_unlabeled_as_negative": True,
         },
         "outputs": {
             "candidates_top_n": 30,

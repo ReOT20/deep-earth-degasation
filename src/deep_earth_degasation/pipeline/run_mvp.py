@@ -40,6 +40,10 @@ from deep_earth_degasation.io.vector import VectorLayer, load_vector_layer
 from deep_earth_degasation.pipeline.manifest import PreparedStackManifest
 from deep_earth_degasation.reports.passport import write_candidate_passport
 from deep_earth_degasation.scoring import score_candidate_objects
+from deep_earth_degasation.validation.summary import (
+    build_validation_summary,
+    write_validation_summary,
+)
 
 GUARDRAIL_MESSAGE = (
     "Dynamic MVP artifacts are ranked candidate surface anomalies for expert and field "
@@ -53,6 +57,7 @@ class DynamicMVPArtifactPaths:
     candidates_geojson: Path
     candidate_scores_csv: Path
     labeling_table_csv: Path
+    validation_summary_json: Path
     passports_dir: Path
     time_series_dir: Path
     run_manifest_json: Path
@@ -106,6 +111,7 @@ def run_dynamic_mvp(
         candidates_geojson=output_dir / "candidates.geojson",
         candidate_scores_csv=output_dir / "candidate_scores.csv",
         labeling_table_csv=output_dir / "labeling_table.csv",
+        validation_summary_json=output_dir / "validation_summary.json",
         passports_dir=output_dir / "passports",
         time_series_dir=output_dir / "time_series",
         run_manifest_json=output_dir / "run_manifest.json",
@@ -113,7 +119,14 @@ def run_dynamic_mvp(
         anomaly_map_npy=output_dir / "anomaly_maps" / "composite_anomaly.npy",
         anomaly_map_metadata_json=output_dir / "anomaly_maps" / "composite_anomaly.json",
     )
-    _write_artifacts(paths, objects, stack, config, composite)
+    _write_artifacts(
+        paths,
+        objects,
+        stack,
+        config,
+        composite,
+        known_sites=_vector_data(vectors, "known_sites"),
+    )
     return paths
 
 
@@ -344,6 +357,8 @@ def _write_artifacts(
     stack: RasterStack,
     config: MVPConfig,
     composite: CompositeAnomalyMap,
+    *,
+    known_sites: gpd.GeoDataFrame | None,
 ) -> None:
     paths.passports_dir.mkdir(parents=True, exist_ok=True)
     paths.time_series_dir.mkdir(parents=True, exist_ok=True)
@@ -358,6 +373,23 @@ def _write_artifacts(
     )
     score_rows = _read_score_rows(paths.candidate_scores_csv)
     write_labeling_table(score_rows, paths.labeling_table_csv)
+    validation_config = config.validation
+    validation_summary = build_validation_summary(
+        score_rows=score_rows,
+        candidates=objects,
+        known_sites=known_sites,
+        top_n=validation_config.top_n if validation_config is not None else 20,
+        known_site_recall_top_n=(
+            tuple(validation_config.known_site_recall_top_n)
+            if validation_config is not None
+            else ()
+        ),
+        expert_precision_top_n=(
+            validation_config.expert_precision_top_n if validation_config is not None else None
+        ),
+        guardrail=GUARDRAIL_MESSAGE,
+    )
+    write_validation_summary(validation_summary, paths.validation_summary_json)
     for score_row in score_rows:
         passport_path = Path(score_row["passport_path"])
         write_candidate_passport(score_row, passport_path)
