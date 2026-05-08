@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,11 @@ SCORE_FIELDNAMES = [
     "rank",
     "priority_class",
     "candidate_id",
+    "object_score",
     "morphology_type",
+    "evidence_class",
+    "landcover_branch",
+    "dominant_landcover_branch",
     "source_landcover_context",
     "source_morphology_type",
     "source_false_positive_risk",
@@ -44,10 +49,26 @@ SCORE_FIELDNAMES = [
     "diameter_m",
     "circularity",
     "elongation",
+    "field_id",
+    "distance_to_field_edge_m",
+    "moisture_anomaly",
+    "vegetation_stress",
+    "soil_brightness_bsi",
+    "thermal_anomaly",
+    "sar_anomaly",
+    "persistence",
+    "post_rain_drying",
+    "geology_context",
+    "false_positive_penalty",
     "evidence",
     "flags",
     "dominant_evidence",
     "false_positive_flags",
+    "missing_data_flags",
+    "anomalous_dates",
+    "source_feature_names",
+    "source_layer_ids",
+    "passport_path",
 ]
 
 
@@ -100,7 +121,10 @@ def static_candidate_to_score_row(
     }
 
 
-def candidate_object_to_feature(candidate: Any) -> dict[str, Any]:
+def candidate_object_to_feature(
+    candidate: Any,
+    passport_path: Path | str | None = None,
+) -> dict[str, Any]:
     """Serialize a dynamic or fused object candidate row to GeoJSON."""
     geometry = _object_geometry(candidate)
     flags = _object_flags(candidate)
@@ -111,17 +135,30 @@ def candidate_object_to_feature(candidate: Any) -> dict[str, Any]:
             "candidate_id": _object_candidate_id(candidate),
             "evidence_class": _text(_object_value(candidate, "evidence_class")),
             "morphology_type": _object_morphology_type(candidate),
+            "object_score": _object_score_value(candidate, "object_score"),
             "static_score": _object_score_value(candidate, "static_score"),
             "dynamic_score": _object_dynamic_score(candidate),
             "area_m2": _object_score_value(candidate, "area_m2", fallback=geometry.area),
-            "diameter_m": _object_score_value(candidate, "diameter_m"),
+            "diameter_m": _object_diameter(candidate),
             "circularity": _object_score_value(candidate, "circularity"),
             "elongation": _object_score_value(candidate, "elongation"),
+            "landcover_branch": _text(_object_value(candidate, "landcover_branch")),
+            "dominant_landcover_branch": _text(
+                _object_value(candidate, "dominant_landcover_branch")
+            ),
+            "field_id": _text(_object_value(candidate, "field_id")),
+            "distance_to_field_edge_m": _object_score_value(candidate, "distance_to_field_edge_m"),
+            "dominant_evidence": _object_dominant_evidence(candidate),
+            "dynamic_evidence": _dynamic_evidence(candidate),
             "flags": flags,
             "dynamic_object_flags": _object_list(candidate, "dynamic_object_flags"),
             "false_positive_flags": false_positive_flags,
             "false_positive_penalty": _object_score_value(candidate, "false_positive_penalty"),
             "missing_data_flags": _object_list(candidate, "missing_data_flags"),
+            "anomalous_dates": _object_list(candidate, "anomalous_dates"),
+            "source_feature_names": _object_list(candidate, "source_feature_names"),
+            "source_layer_ids": _object_list(candidate, "source_layer_ids"),
+            "passport_path": str(passport_path or _object_value(candidate, "passport_path") or ""),
         },
         "geometry": mapping(geometry),
     }
@@ -130,14 +167,21 @@ def candidate_object_to_feature(candidate: Any) -> dict[str, Any]:
 def candidate_object_to_score_row(
     candidate: Any,
     rank: int,
+    passport_path: Path | str | None = None,
 ) -> dict[str, str | int | float]:
     """Serialize a dynamic or fused object candidate row to the score CSV schema."""
     static_score = _object_score_value(candidate, "static_score")
+    object_score = _object_score_value(candidate, "object_score")
+    dynamic_evidence = _dynamic_evidence(candidate)
     return {
         "rank": rank,
-        "priority_class": priority_class(static_score) if isinstance(static_score, float) else "",
+        "priority_class": _object_priority_class(candidate, object_score),
         "candidate_id": _object_candidate_id(candidate),
+        "object_score": object_score,
         "morphology_type": _object_morphology_type(candidate),
+        "evidence_class": _text(_object_value(candidate, "evidence_class")),
+        "landcover_branch": _text(_object_value(candidate, "landcover_branch")),
+        "dominant_landcover_branch": _text(_object_value(candidate, "dominant_landcover_branch")),
         "source_landcover_context": "",
         "source_morphology_type": "",
         "source_false_positive_risk": "",
@@ -147,15 +191,31 @@ def candidate_object_to_score_row(
         "area_m2": _object_score_value(
             candidate, "area_m2", fallback=_object_geometry(candidate).area
         ),
-        "diameter_m": _object_score_value(candidate, "diameter_m"),
+        "diameter_m": _object_diameter(candidate),
         "circularity": _object_score_value(candidate, "circularity"),
         "elongation": _object_score_value(candidate, "elongation"),
+        "field_id": _text(_object_value(candidate, "field_id")),
+        "distance_to_field_edge_m": _object_score_value(candidate, "distance_to_field_edge_m"),
+        "moisture_anomaly": dynamic_evidence["moisture_anomaly"],
+        "vegetation_stress": dynamic_evidence["vegetation_stress"],
+        "soil_brightness_bsi": dynamic_evidence["soil_brightness_bsi"],
+        "thermal_anomaly": dynamic_evidence["thermal_anomaly"],
+        "sar_anomaly": dynamic_evidence["sar_anomaly"],
+        "persistence": _object_score_value(candidate, "repeated_seasons"),
+        "post_rain_drying": dynamic_evidence["post_rain_drying"],
+        "geology_context": dynamic_evidence["geology_context"],
+        "false_positive_penalty": _object_score_value(candidate, "false_positive_penalty"),
         "evidence": _json_string(
             {"evidence_class": _text(_object_value(candidate, "evidence_class"))}
         ),
         "flags": _json_string(_object_flags(candidate)),
         "dominant_evidence": _object_dominant_evidence(candidate),
         "false_positive_flags": _json_string(_object_list(candidate, "false_positive_flags")),
+        "missing_data_flags": _json_string(_object_list(candidate, "missing_data_flags")),
+        "anomalous_dates": _json_string(_object_list(candidate, "anomalous_dates")),
+        "source_feature_names": _json_string(_object_list(candidate, "source_feature_names")),
+        "source_layer_ids": _json_string(_object_list(candidate, "source_layer_ids")),
+        "passport_path": str(passport_path or _object_value(candidate, "passport_path") or ""),
     }
 
 
@@ -192,13 +252,21 @@ def write_candidate_scores_csv(
             writer.writerow(static_candidate_to_score_row(candidate, rank, properties))
 
 
-def write_candidate_objects_geojson(candidates: Any, path: Path) -> None:
+def write_candidate_objects_geojson(
+    candidates: Any,
+    path: Path,
+    *,
+    passports_dir: Path | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     feature_collection = {
         "type": "FeatureCollection",
         "features": [
-            candidate_object_to_feature(candidate)
-            for candidate in _candidate_object_rows(candidates)
+            candidate_object_to_feature(
+                candidate,
+                _object_passport_path(candidate, rank, passports_dir),
+            )
+            for rank, candidate in enumerate(_ranked_candidate_object_rows(candidates), start=1)
         ],
     }
     path.write_text(
@@ -206,13 +274,38 @@ def write_candidate_objects_geojson(candidates: Any, path: Path) -> None:
     )
 
 
-def write_candidate_object_scores_csv(candidates: Any, path: Path) -> None:
+def write_candidate_object_scores_csv(
+    candidates: Any,
+    path: Path,
+    *,
+    passports_dir: Path | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=SCORE_FIELDNAMES)
         writer.writeheader()
-        for rank, candidate in enumerate(_candidate_object_rows(candidates), start=1):
-            writer.writerow(candidate_object_to_score_row(candidate, rank))
+        for rank, candidate in enumerate(_ranked_candidate_object_rows(candidates), start=1):
+            passport_path = _object_passport_path(candidate, rank, passports_dir)
+            writer.writerow(candidate_object_to_score_row(candidate, rank, passport_path))
+
+
+def write_candidate_object_time_series(candidates: Any, output_dir: Path) -> list[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for rank, candidate in enumerate(_candidate_object_rows(candidates), start=1):
+        rows = _object_time_series_rows(candidate)
+        if not rows:
+            continue
+        path = output_dir / f"{_safe_filename_stem(_object_candidate_id(candidate), rank)}.csv"
+        with path.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=["candidate_id", "date", "source_layer_ids", "source_feature_names"],
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        paths.append(path)
+    return paths
 
 
 def write_candidate_artifacts(
@@ -282,6 +375,16 @@ def _candidate_object_rows(candidates: Any) -> list[Any]:
     return list(candidates)
 
 
+def _ranked_candidate_object_rows(candidates: Any) -> list[Any]:
+    return sorted(
+        _candidate_object_rows(candidates),
+        key=lambda candidate: (
+            -_sortable_score(_object_value(candidate, "object_score")),
+            _object_candidate_id(candidate),
+        ),
+    )
+
+
 def _object_geometry(candidate: Any) -> Any:
     if hasattr(candidate, "geometry"):
         return candidate.geometry
@@ -306,13 +409,17 @@ def _object_value(candidate: Any, key: str) -> object | None:
 
 def _object_list(candidate: Any, key: str) -> list[str]:
     value = _object_value(candidate, key)
-    if value is None:
+    if value is None or _is_nan(value):
         return []
     if isinstance(value, str):
         return [value]
     if isinstance(value, Iterable):
         return sorted(str(item) for item in value)
     return [str(value)]
+
+
+def _is_nan(value: object) -> bool:
+    return isinstance(value, float) and math.isnan(value)
 
 
 def _object_flags(candidate: Any) -> list[str]:
@@ -333,12 +440,117 @@ def _object_score_value(candidate: Any, key: str, *, fallback: object | None = N
     return ""
 
 
+def _object_diameter(candidate: Any) -> str | float:
+    for key in ("diameter_m", "equivalent_diameter_m"):
+        value = _object_score_value(candidate, key)
+        if value != "":
+            return value
+    return ""
+
+
 def _object_dynamic_score(candidate: Any) -> str | float:
     for key in ("dynamic_score", "dynamic_max_anomaly", "max_anomaly"):
         value = _object_score_value(candidate, key)
         if value != "":
             return value
     return ""
+
+
+def _object_priority_class(candidate: Any, object_score: str | float) -> str:
+    existing = _text(_object_value(candidate, "priority_class"))
+    if existing:
+        return existing
+    return priority_class(object_score) if isinstance(object_score, float) else ""
+
+
+def _sortable_score(value: object | None) -> float:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        number = float(value)
+        return number if math.isfinite(number) else 0.0
+    return 0.0
+
+
+def _dynamic_evidence(candidate: Any) -> dict[str, str | float]:
+    per_feature_max = _object_value(candidate, "per_feature_max")
+    evidence: dict[str, str | float] = {
+        "moisture_anomaly": "",
+        "vegetation_stress": "",
+        "soil_brightness_bsi": "",
+        "thermal_anomaly": "",
+        "sar_anomaly": "",
+        "post_rain_drying": "",
+        "geology_context": "",
+    }
+    if not isinstance(per_feature_max, dict):
+        return evidence
+    for feature_name, value in per_feature_max.items():
+        output_field = _dynamic_evidence_field(str(feature_name))
+        if output_field is None:
+            continue
+        current = evidence[output_field]
+        score_value = _score_value(value)
+        if not isinstance(score_value, float):
+            continue
+        evidence[output_field] = (
+            max(current, score_value) if isinstance(current, float) else score_value
+        )
+    return evidence
+
+
+def _dynamic_evidence_field(feature_name: str) -> str | None:
+    normalized = feature_name.lower()
+    if any(token in normalized for token in ("ndmi", "ndwi", "msi", "moisture")):
+        return "moisture_anomaly"
+    if any(token in normalized for token in ("ndvi", "red_edge", "red-edge", "vegetation")):
+        return "vegetation_stress"
+    if any(token in normalized for token in ("bsi", "brightness", "bare_soil", "bare-soil")):
+        return "soil_brightness_bsi"
+    if any(token in normalized for token in ("lst", "thermal", "temperature")):
+        return "thermal_anomaly"
+    if any(token in normalized for token in ("sar", "vv", "vh")):
+        return "sar_anomaly"
+    if "post_rain" in normalized or "drying" in normalized:
+        return "post_rain_drying"
+    if "geology" in normalized:
+        return "geology_context"
+    return None
+
+
+def _score_value(value: object) -> str | float:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        number = float(value)
+        return number if math.isfinite(number) else ""
+    return ""
+
+
+def _object_passport_path(candidate: Any, rank: int, passports_dir: Path | None) -> Path | str:
+    if passports_dir is None:
+        value = _object_value(candidate, "passport_path")
+        return "" if value is None else str(value)
+    return passports_dir / f"{_safe_filename_stem(_object_candidate_id(candidate), rank)}.md"
+
+
+def _object_time_series_rows(candidate: Any) -> list[dict[str, str]]:
+    dates = _object_list(candidate, "anomalous_dates")
+    if not dates:
+        return []
+    candidate_id = _object_candidate_id(candidate)
+    layer_ids = _json_string(_object_list(candidate, "source_layer_ids"))
+    feature_names = _json_string(_object_list(candidate, "source_feature_names"))
+    return [
+        {
+            "candidate_id": candidate_id,
+            "date": date,
+            "source_layer_ids": layer_ids,
+            "source_feature_names": feature_names,
+        }
+        for date in dates
+    ]
+
+
+def _safe_filename_stem(candidate_id: str, rank: int) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", candidate_id).strip("._-")
+    return stem or f"candidate-{rank}"
 
 
 def _object_morphology_type(candidate: Any) -> str:
@@ -350,6 +562,9 @@ def _object_morphology_type(candidate: Any) -> str:
 
 
 def _object_dominant_evidence(candidate: Any) -> str:
+    existing = _text(_object_value(candidate, "dominant_evidence"))
+    if existing:
+        return existing
     evidence_class = _text(_object_value(candidate, "evidence_class"))
     if evidence_class:
         return evidence_class.replace("_", " ")

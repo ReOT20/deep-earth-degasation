@@ -15,6 +15,7 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
     candidate_id = _text(score_row, "candidate_id")
     rank = _text(score_row, "rank")
     priority_class = _text(score_row, "priority_class")
+    object_score = _text(score_row, "object_score")
     static_score = _text(score_row, "static_score")
     dynamic_score = _text(score_row, "dynamic_score")
     missing_dynamic = dynamic_score == ""
@@ -25,6 +26,10 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
         else f"dynamic_score: {dynamic_score}"
     )
     false_positive_flags = _json_list_text(score_row, "false_positive_flags")
+    missing_data_flags = _json_list_text(score_row, "missing_data_flags")
+    anomaly_dates = _json_list_text(score_row, "anomalous_dates")
+    source_features = _json_list_text(score_row, "source_feature_names")
+    source_layers = _json_list_text(score_row, "source_layer_ids")
     flags = _json_list_text(score_row, "flags")
     source_context = _source_context_lines(score_row)
 
@@ -37,6 +42,8 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
             f"- `candidate_id`: {candidate_id}",
             f"- `rank`: {rank}",
             f"- `priority_class`: {priority_class}",
+            f"- `evidence_class`: {_text(score_row, 'evidence_class')}",
+            f"- `passport_path`: {_text(score_row, 'passport_path')}",
             "",
             *source_context,
             "## Interpretation Guardrail",
@@ -48,6 +55,7 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
             "",
             "## Score Summary",
             "",
+            f"- `object_score`: {object_score}",
             f"- `static_score`: {static_score}",
             f"- `dynamic_score`: {dynamic_score or 'unavailable'}",
             f"- `dominant_evidence`: {_text(score_row, 'dominant_evidence')}",
@@ -68,6 +76,20 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
             "## Dynamic Evidence",
             "",
             f"- `{missing_dynamic_text}`",
+            f"- `landcover_branch`: {_text(score_row, 'landcover_branch')}",
+            f"- `dominant_landcover_branch`: {_text(score_row, 'dominant_landcover_branch')}",
+            f"- `field_id`: {_text(score_row, 'field_id')}",
+            f"- `anomalous_dates`: {anomaly_dates}",
+            f"- `source_feature_names`: {source_features}",
+            f"- `source_layer_ids`: {source_layers}",
+            f"- `moisture_anomaly`: {_text(score_row, 'moisture_anomaly')}",
+            f"- `vegetation_stress`: {_text(score_row, 'vegetation_stress')}",
+            f"- `soil_brightness_bsi`: {_text(score_row, 'soil_brightness_bsi')}",
+            f"- `thermal_anomaly`: {_text(score_row, 'thermal_anomaly')}",
+            f"- `sar_anomaly`: {_text(score_row, 'sar_anomaly')}",
+            f"- `persistence`: {_text(score_row, 'persistence')}",
+            f"- `post_rain_drying`: {_text(score_row, 'post_rain_drying')}",
+            f"- `geology_context`: {_text(score_row, 'geology_context')}",
             "",
             "Dynamic anomaly evidence is not produced by the geometry-only static "
             "pipeline. Soil drying or post-rain behavior must not be treated as "
@@ -76,6 +98,8 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
             "## False-Positive Review",
             "",
             f"- `false_positive_flags`: {false_positive_flags}",
+            f"- `false_positive_penalty`: {_text(score_row, 'false_positive_penalty')}",
+            f"- `missing_data_flags`: {missing_data_flags}",
             "- `false_positive_reason`: ",
             "- `reviewer_notes`: ",
             "",
