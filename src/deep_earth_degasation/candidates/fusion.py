@@ -150,11 +150,21 @@ def _empty_static_fields() -> dict[str, Any]:
 
 def _dynamic_fields(dynamic_row: Any) -> dict[str, Any]:
     return {
+        "area_m2": _row_value(dynamic_row, "area_m2"),
+        "perimeter_m": _row_value(dynamic_row, "perimeter_m"),
+        "equivalent_diameter_m": _row_value(dynamic_row, "equivalent_diameter_m"),
+        "circularity": _row_value(dynamic_row, "circularity"),
+        "elongation": _row_value(dynamic_row, "elongation"),
         "dynamic_mean_anomaly": _row_value(dynamic_row, "mean_anomaly"),
         "dynamic_max_anomaly": _row_value(dynamic_row, "max_anomaly"),
+        "per_feature_mean": _dict_value(dynamic_row, "per_feature_mean"),
+        "per_feature_max": _dict_value(dynamic_row, "per_feature_max"),
+        "source_feature_names": tuple(_list_value(dynamic_row, "source_feature_names")),
         "dynamic_object_flags": tuple(_row_value(dynamic_row, "dynamic_object_flags") or ()),
         "anomalous_dates": tuple(_row_value(dynamic_row, "anomalous_dates") or ()),
         "source_layer_ids": tuple(_row_value(dynamic_row, "source_layer_ids") or ()),
+        "source_detection_count": _row_value(dynamic_row, "source_detection_count"),
+        "repeated_seasons": _row_value(dynamic_row, "repeated_seasons"),
         "false_positive_flags": tuple(_list_value(dynamic_row, "false_positive_flags")),
         "false_positive_penalty": _float_value(dynamic_row, "false_positive_penalty", default=0.0),
         "missing_data_flags": tuple(_list_value(dynamic_row, "missing_data_flags")),
@@ -163,11 +173,21 @@ def _dynamic_fields(dynamic_row: Any) -> dict[str, Any]:
 
 def _empty_dynamic_fields() -> dict[str, Any]:
     return {
+        "area_m2": None,
+        "perimeter_m": None,
+        "equivalent_diameter_m": None,
+        "circularity": None,
+        "elongation": None,
         "dynamic_mean_anomaly": None,
         "dynamic_max_anomaly": None,
+        "per_feature_mean": {},
+        "per_feature_max": {},
+        "source_feature_names": (),
         "dynamic_object_flags": (),
         "anomalous_dates": (),
         "source_layer_ids": (),
+        "source_detection_count": None,
+        "repeated_seasons": None,
     }
 
 
@@ -186,6 +206,11 @@ def _list_value(row: Any, field_name: str) -> tuple[Any, ...]:
     if isinstance(value, str):
         return (value,)
     return tuple(value)
+
+
+def _dict_value(row: Any, field_name: str) -> dict[Any, Any]:
+    value = _row_value(row, field_name)
+    return value if isinstance(value, dict) else {}
 
 
 def _float_value(row: Any, field_name: str, *, default: float) -> float:
@@ -219,11 +244,21 @@ def _empty_fused_candidates(crs: str | None) -> gpd.GeoDataFrame:
             "static_score": [],
             "static_morphology_type": [],
             "static_flags": [],
+            "area_m2": [],
+            "perimeter_m": [],
+            "equivalent_diameter_m": [],
+            "circularity": [],
+            "elongation": [],
             "dynamic_mean_anomaly": [],
             "dynamic_max_anomaly": [],
+            "per_feature_mean": [],
+            "per_feature_max": [],
+            "source_feature_names": [],
             "dynamic_object_flags": [],
             "anomalous_dates": [],
             "source_layer_ids": [],
+            "source_detection_count": [],
+            "repeated_seasons": [],
             "false_positive_flags": [],
             "false_positive_penalty": [],
             "missing_data_flags": [],
