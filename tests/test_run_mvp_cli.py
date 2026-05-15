@@ -95,10 +95,36 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert "`dynamic_score`:" in passport
 
     candidate_data = json.loads(candidates_geojson.read_text(encoding="utf-8"))
+    candidate_gdf = gpd.read_file(candidates_geojson)
+    assert str(candidate_gdf.crs) == CRS
+    assert candidate_gdf.total_bounds[0] >= 0.0
+    assert candidate_gdf.total_bounds[2] <= 100.0
     assert candidate_data["features"]
     assert candidate_data["features"][0]["properties"]["passport_path"].endswith(".md")
     assert list(time_series_dir.glob("*.csv"))
     assert np.load(anomaly_map).shape == (10, 10)
+
+    stale_passport = passports_dir / "dynamic-object-999999.md"
+    stale_time_series = time_series_dir / "dynamic-object-999999.csv"
+    stale_passport.write_text("stale", encoding="utf-8")
+    stale_time_series.write_text("stale", encoding="utf-8")
+
+    rerun = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert rerun.exit_code == 0, rerun.output
+    assert not stale_passport.exists()
+    assert not stale_time_series.exists()
 
 
 def _write_config(tmp_path: Path) -> Path:

@@ -96,8 +96,12 @@ def _is_missing_field_id(field_id: FieldId) -> bool:
         return True
     if isinstance(field_id, str):
         return field_id == ""
+    if isinstance(field_id, int):
+        return field_id == 0
+    if isinstance(field_id, np.integer):
+        return bool(field_id == 0)
     if isinstance(field_id, float | np.floating):
-        return bool(np.isnan(field_id))
+        return bool(np.isnan(field_id) or field_id == 0.0)
     return False
 
 

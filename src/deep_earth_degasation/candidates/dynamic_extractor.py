@@ -21,6 +21,8 @@ from deep_earth_degasation.morphology.shape import compute_shape_metrics
 @dataclass(frozen=True)
 class DynamicExtractionConfig:
     anomaly_percentile: float = 95.0
+    support_percentile: float | None = None
+    min_support_pixels: int = 1
     min_area_m2: float = 1_000.0
     max_area_m2: float = 800_000.0
     min_diameter_m: float = 40.0
@@ -93,13 +95,27 @@ def _field_local_labels(
         values = data[positive_support_mask]
         if values.size == 0:
             continue
-        threshold = float(np.nanpercentile(values, config.anomaly_percentile))
-        anomaly_mask = positive_support_mask & (data >= threshold)
-        field_labels = label(anomaly_mask, connectivity=config.connectivity)
+        seed_threshold = float(np.nanpercentile(values, config.anomaly_percentile))
+        support_threshold = _support_threshold(values, config)
+        seed_mask = positive_support_mask & (data >= seed_threshold)
+        support_mask = positive_support_mask & (data >= support_threshold)
+        field_labels = label(support_mask, connectivity=config.connectivity)
         for component_label in range(1, int(field_labels.max()) + 1):
-            labels[field_labels == component_label] = next_label
+            component_mask = field_labels == component_label
+            if not np.any(component_mask & seed_mask):
+                continue
+            if int(np.count_nonzero(component_mask)) < config.min_support_pixels:
+                continue
+            labels[component_mask] = next_label
             next_label += 1
     return labels
+
+
+def _support_threshold(values: np.ndarray, config: DynamicExtractionConfig) -> float:
+    if config.support_percentile is None:
+        return float(np.nanpercentile(values, config.anomaly_percentile))
+    support_percentile = min(config.support_percentile, config.anomaly_percentile)
+    return float(np.nanpercentile(values, support_percentile))
 
 
 def _component_geometry(mask: np.ndarray, transform: Affine) -> BaseGeometry | None:
@@ -129,7 +145,15 @@ def _object_row(
 ) -> dict[str, Any]:
     metrics = compute_shape_metrics(geometry)
     stats = compute_object_zonal_stats(layers, mask)
-    flags = _object_flags(metrics.area, metrics.equivalent_diameter, metrics.elongation, config)
+    support_pixel_count = int(np.count_nonzero(mask))
+    pixel_area_m2 = metrics.area / support_pixel_count if support_pixel_count else 0.0
+    flags = _object_flags(
+        metrics.area,
+        metrics.equivalent_diameter,
+        metrics.elongation,
+        support_pixel_count,
+        config,
+    )
     return {
         "object_id": object_id,
         "field_id": field_id,
@@ -139,6 +163,8 @@ def _object_row(
         "equivalent_diameter_m": metrics.equivalent_diameter,
         "circularity": metrics.circularity,
         "elongation": metrics.elongation,
+        "support_pixel_count": support_pixel_count,
+        "pixel_area_m2": pixel_area_m2,
         "mean_anomaly": stats.mean_anomaly,
         "max_anomaly": stats.max_anomaly,
         "per_feature_mean": stats.per_feature_mean,
@@ -192,7 +218,15 @@ def _merged_row(
         geometry = geometry.union(row["geometry"])
     metrics = compute_shape_metrics(geometry)
     dates = sorted({date for row in group for date in row["anomalous_dates"]})
-    flags = _object_flags(metrics.area, metrics.equivalent_diameter, metrics.elongation, config)
+    pixel_area_m2 = float(group[0].get("pixel_area_m2") or 0.0)
+    support_pixel_count = round(metrics.area / pixel_area_m2) if pixel_area_m2 > 0 else 0
+    flags = _object_flags(
+        metrics.area,
+        metrics.equivalent_diameter,
+        metrics.elongation,
+        support_pixel_count,
+        config,
+    )
     per_feature_mean = _merge_feature_stats(group, "per_feature_mean")
     per_feature_max = _merge_feature_stats(group, "per_feature_max", use_max=True)
     return {
@@ -204,6 +238,8 @@ def _merged_row(
         "equivalent_diameter_m": metrics.equivalent_diameter,
         "circularity": metrics.circularity,
         "elongation": metrics.elongation,
+        "support_pixel_count": support_pixel_count,
+        "pixel_area_m2": pixel_area_m2,
         "mean_anomaly": float(np.nanmean([row["mean_anomaly"] for row in group])),
         "max_anomaly": float(np.nanmax([row["max_anomaly"] for row in group])),
         "per_feature_mean": per_feature_mean,
@@ -240,10 +276,15 @@ def _object_flags(
     area_m2: float,
     diameter_m: float,
     elongation: float,
+    support_pixel_count: int,
     config: DynamicExtractionConfig,
 ) -> list[str]:
     flags: list[str] = []
-    if area_m2 < config.min_area_m2 or diameter_m < config.min_diameter_m:
+    if (
+        area_m2 < config.min_area_m2
+        or diameter_m < config.min_diameter_m
+        or support_pixel_count < config.min_support_pixels
+    ):
         flags.append("too_small")
     if area_m2 > config.max_area_m2 or diameter_m > config.max_diameter_m:
         flags.append("too_large")
@@ -277,8 +318,12 @@ def _is_missing_field_id(field_id: object) -> bool:
         return True
     if isinstance(field_id, str):
         return field_id == ""
+    if isinstance(field_id, int):
+        return field_id == 0
+    if isinstance(field_id, np.integer):
+        return bool(field_id == 0)
     if isinstance(field_id, float | np.floating):
-        return bool(np.isnan(field_id))
+        return bool(np.isnan(field_id) or field_id == 0.0)
     return False
 
 

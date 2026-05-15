@@ -70,6 +70,20 @@ def test_numeric_field_ids_are_used_for_masks() -> None:
     assert not np.isnan(anomaly.data).all()
 
 
+def test_zero_label_background_is_not_normalized_as_a_field() -> None:
+    feature = _feature(
+        "NDMI",
+        [[0.50, 0.51, 0.20, 0.99]],
+        direction="lower_values_indicate_moisture_stress",
+    )
+    field_ids = np.array([[1, 1, 1, 0]])
+
+    anomaly = field_normalized_anomaly(feature, field_ids, component="moisture")
+
+    assert anomaly.data[0, 2] > 1.0
+    assert np.isnan(anomaly.data[0, 3])
+
+
 def test_float_field_ids_skip_nan_background() -> None:
     feature = _feature(
         "NDMI",

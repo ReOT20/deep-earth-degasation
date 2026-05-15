@@ -126,6 +126,8 @@ anomaly_components:
 
 dynamic_detector:
   anomaly_percentile: 95
+  support_percentile: 90
+  min_support_pixels: 4
   connected_components: true
   morphology_filter: true
   min_valid_observations_per_season: 4

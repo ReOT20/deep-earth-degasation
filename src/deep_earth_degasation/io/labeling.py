@@ -20,6 +20,7 @@ LABELING_FIELDNAMES = [
     "static_score",
     "dynamic_score",
     "field_id",
+    "support_pixel_count",
     "moisture_anomaly",
     "vegetation_stress",
     "soil_brightness_bsi",

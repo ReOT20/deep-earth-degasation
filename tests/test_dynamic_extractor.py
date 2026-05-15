@@ -35,8 +35,61 @@ def test_circular_anomaly_extracts_one_dynamic_object_with_stats() -> None:
     assert row["source_feature_names"] == ("NDMI",)
     assert row["per_feature_max"]["NDMI"] == 10.0
     assert row["max_anomaly"] == 10.0
+    assert row["support_pixel_count"] == 13
     assert row["circularity"] > 0.35
     assert row["elongation"] < 1.5
+
+
+def test_support_threshold_grows_candidate_around_seed_pixel() -> None:
+    data = _blank()
+    data[4:7, 4:7] = 4.0
+    data[5, 5] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects(
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=DynamicExtractionConfig(
+            anomaly_percentile=99.0,
+            support_percentile=80.0,
+            min_support_pixels=5,
+            min_area_m2=100.0,
+            min_diameter_m=5.0,
+            max_area_m2=50_000.0,
+            max_diameter_m=300.0,
+            merge_distance_m=20.0,
+        ),
+    )
+
+    assert len(objects) == 1
+    assert objects["support_pixel_count"].iloc[0] == 9
+    assert objects.geometry.iloc[0].area == 900.0
+
+
+def test_min_support_pixels_filters_single_pixel_detections() -> None:
+    data = _blank()
+    data[5, 5] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects(
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=DynamicExtractionConfig(
+            anomaly_percentile=99.0,
+            min_support_pixels=2,
+            min_area_m2=1.0,
+            min_diameter_m=1.0,
+            max_area_m2=50_000.0,
+            max_diameter_m=300.0,
+            merge_distance_m=20.0,
+        ),
+    )
+
+    assert objects.empty
 
 
 def test_components_do_not_merge_across_field_boundaries() -> None:
@@ -54,6 +107,26 @@ def test_components_do_not_merge_across_field_boundaries() -> None:
 
     assert len(objects) == 2
     assert set(objects["field_id"]) == {"1", "2"}
+
+
+def test_zero_label_background_is_not_extracted_as_dynamic_object() -> None:
+    data = _blank()
+    data[1:4, 1:4] = 12.0
+    data[6:8, 6:8] = 10.0
+    field_ids = np.zeros(data.shape, dtype=int)
+    field_ids[6:8, 6:8] = 1
+
+    objects = extract_dynamic_objects(
+        (_layer("NDMI", data),),
+        field_ids,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=100.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    assert objects["field_id"].iloc[0] == "1"
+    assert objects.geometry.iloc[0].bounds == (60.0, 20.0, 80.0, 40.0)
 
 
 def test_field_context_is_assigned_when_field_polygons_are_supplied() -> None:

@@ -124,6 +124,8 @@ class StaticRingDetectorConfig(StrictModel):
 
 class DynamicDetectorConfig(StrictModel):
     anomaly_percentile: float = Field(default=95.0, ge=0.0, le=100.0)
+    support_percentile: float | None = Field(default=None, ge=0.0, le=100.0)
+    min_support_pixels: PositiveInt = 1
     min_valid_observations_per_season: PositiveInt = 4
     min_repeated_seasons: PositiveInt = 2
     connected_components: bool = True

@@ -41,6 +41,7 @@ def test_dynamic_candidate_scores_include_review_evidence_and_passport_paths(
     assert rows[0]["dynamic_score"] == "0.82"
     assert rows[0]["landcover_branch"] == "cropland"
     assert rows[0]["field_id"] == "field-7"
+    assert rows[0]["support_pixel_count"] == "7"
     assert rows[0]["false_positive_flags"] == '["road_risk"]'
     assert rows[0]["missing_data_flags"] == '["missing_context_water"]'
     assert rows[0]["passport_path"].endswith("passports/candidate-high.md")
@@ -63,11 +64,15 @@ def test_dynamic_candidate_geojson_preserves_scores_flags_and_source_evidence(
 
     data = json.loads(output_path.read_text(encoding="utf-8"))
     properties = data["features"][0]["properties"]
+    reloaded = gpd.read_file(output_path)
+
+    assert str(reloaded.crs) == CRS
     assert properties["candidate_id"] == "candidate-high"
     assert properties["object_score"] == 0.91
     assert properties["dynamic_score"] == 0.82
     assert properties["dominant_evidence"] == "cropland dynamic anomaly with static morphology"
     assert properties["false_positive_flags"] == ["road_risk"]
+    assert properties["support_pixel_count"] == 7
     assert properties["missing_data_flags"] == ["missing_context_water"]
     assert properties["anomalous_dates"] == ["2023-05-01", "2024-05-01"]
     assert properties["dynamic_evidence"]["moisture_anomaly"] == 3.0
@@ -141,6 +146,7 @@ def _candidate_objects() -> gpd.GeoDataFrame:
                 "field_id": "field-7",
                 "distance_to_field_edge_m": 35.0,
                 "area_m2": 1200.0,
+                "support_pixel_count": 7,
                 "equivalent_diameter_m": 39.1,
                 "circularity": 0.82,
                 "elongation": 1.4,

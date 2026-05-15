@@ -283,6 +283,8 @@ def _dynamic_extraction_config(config: MVPConfig) -> DynamicExtractionConfig:
     constraints = config.object_constraints
     return DynamicExtractionConfig(
         anomaly_percentile=dynamic.anomaly_percentile if dynamic is not None else 95.0,
+        support_percentile=dynamic.support_percentile if dynamic is not None else None,
+        min_support_pixels=dynamic.min_support_pixels if dynamic is not None else 1,
         min_area_m2=constraints.min_area_ha * 10_000.0,
         max_area_m2=constraints.max_area_ha * 10_000.0,
         min_diameter_m=constraints.min_diameter_m,
@@ -363,6 +365,8 @@ def _write_artifacts(
     paths.passports_dir.mkdir(parents=True, exist_ok=True)
     paths.time_series_dir.mkdir(parents=True, exist_ok=True)
     paths.anomaly_map_npy.parent.mkdir(parents=True, exist_ok=True)
+    _clear_generated_files(paths.passports_dir, "dynamic-object-*.md")
+    _clear_generated_files(paths.time_series_dir, "dynamic-object-*.csv")
     write_candidate_objects_geojson(
         objects, paths.candidates_geojson, passports_dir=paths.passports_dir
     )
@@ -414,6 +418,12 @@ def _write_artifacts(
         + "\n",
         encoding="utf-8",
     )
+
+
+def _clear_generated_files(directory: Path, pattern: str) -> None:
+    for path in directory.glob(pattern):
+        if path.is_file():
+            path.unlink()
 
 
 def _read_score_rows(path: Path) -> list[dict[str, str]]:

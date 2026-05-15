@@ -49,6 +49,7 @@ SCORE_FIELDNAMES = [
     "diameter_m",
     "circularity",
     "elongation",
+    "support_pixel_count",
     "field_id",
     "distance_to_field_edge_m",
     "moisture_anomaly",
@@ -142,6 +143,7 @@ def candidate_object_to_feature(
             "diameter_m": _object_diameter(candidate),
             "circularity": _object_score_value(candidate, "circularity"),
             "elongation": _object_score_value(candidate, "elongation"),
+            "support_pixel_count": _object_int_value(candidate, "support_pixel_count"),
             "landcover_branch": _text(_object_value(candidate, "landcover_branch")),
             "dominant_landcover_branch": _text(
                 _object_value(candidate, "dominant_landcover_branch")
@@ -194,6 +196,7 @@ def candidate_object_to_score_row(
         "diameter_m": _object_diameter(candidate),
         "circularity": _object_score_value(candidate, "circularity"),
         "elongation": _object_score_value(candidate, "elongation"),
+        "support_pixel_count": _object_int_value(candidate, "support_pixel_count"),
         "field_id": _text(_object_value(candidate, "field_id")),
         "distance_to_field_edge_m": _object_score_value(candidate, "distance_to_field_edge_m"),
         "moisture_anomaly": dynamic_evidence["moisture_anomaly"],
@@ -269,6 +272,9 @@ def write_candidate_objects_geojson(
             for rank, candidate in enumerate(_ranked_candidate_object_rows(candidates), start=1)
         ],
     }
+    crs = _candidate_objects_crs(candidates)
+    if crs:
+        feature_collection["crs"] = {"type": "name", "properties": {"name": crs}}
     path.write_text(
         json.dumps(feature_collection, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -385,6 +391,16 @@ def _ranked_candidate_object_rows(candidates: Any) -> list[Any]:
     )
 
 
+def _candidate_objects_crs(candidates: Any) -> str:
+    crs = getattr(candidates, "crs", None)
+    if crs is None:
+        return ""
+    to_string = getattr(crs, "to_string", None)
+    if callable(to_string):
+        return str(to_string())
+    return str(crs)
+
+
 def _object_geometry(candidate: Any) -> Any:
     if hasattr(candidate, "geometry"):
         return candidate.geometry
@@ -445,6 +461,15 @@ def _object_diameter(candidate: Any) -> str | float:
         value = _object_score_value(candidate, key)
         if value != "":
             return value
+    return ""
+
+
+def _object_int_value(candidate: Any, key: str) -> str | int:
+    value = _object_value(candidate, key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return int(value)
     return ""
 
 
