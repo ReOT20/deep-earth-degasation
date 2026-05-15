@@ -15,9 +15,9 @@ DEFAULT_GUARDRAIL = (
     "field review; they are not direct H2 detections or proof of active degassing."
 )
 
-POSITIVE_LABELS = {"a", "b", "c", "positive", "weak_positive", "candidate"}
-NEGATIVE_LABELS = {"n", "hard_negative", "false_positive", "negative"}
-UNKNOWN_LABELS = {"", "u", "unknown", "uncertain"}
+POSITIVE_LABELS = {"positive", "weak_positive"}
+NEGATIVE_LABELS = {"hard_negative"}
+UNKNOWN_LABELS = {"", "unlabeled", "unknown", "uncertain"}
 
 
 def build_validation_summary(

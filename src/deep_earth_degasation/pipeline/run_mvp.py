@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,7 @@ from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.io.raster_stack import RasterLayer, RasterStack, load_raster_stack
 from deep_earth_degasation.io.raster_stack import write_run_manifest as write_raster_run_manifest
 from deep_earth_degasation.io.vector import VectorLayer, load_vector_layer
+from deep_earth_degasation.learning.dataset import write_learning_dataset
 from deep_earth_degasation.pipeline.manifest import PreparedStackManifest
 from deep_earth_degasation.reports.passport import write_candidate_passport
 from deep_earth_degasation.scoring import score_candidate_objects
@@ -57,6 +59,7 @@ class DynamicMVPArtifactPaths:
     candidates_geojson: Path
     candidate_scores_csv: Path
     labeling_table_csv: Path
+    learning_dataset_csv: Path
     validation_summary_json: Path
     passports_dir: Path
     time_series_dir: Path
@@ -111,6 +114,7 @@ def run_dynamic_mvp(
         candidates_geojson=output_dir / "candidates.geojson",
         candidate_scores_csv=output_dir / "candidate_scores.csv",
         labeling_table_csv=output_dir / "labeling_table.csv",
+        learning_dataset_csv=output_dir / "learning_dataset.csv",
         validation_summary_json=output_dir / "validation_summary.json",
         passports_dir=output_dir / "passports",
         time_series_dir=output_dir / "time_series",
@@ -377,6 +381,14 @@ def _write_artifacts(
     )
     score_rows = _read_score_rows(paths.candidate_scores_csv)
     write_labeling_table(score_rows, paths.labeling_table_csv)
+    write_learning_dataset(
+        score_rows,
+        paths.learning_dataset_csv,
+        run_id=stack.manifest.run.id,
+        feature_snapshot_id=_feature_snapshot_id(stack.manifest),
+        aoi_name=config.aoi.name,
+        geometry_ref=str(paths.candidates_geojson),
+    )
     validation_config = config.validation
     validation_summary = build_validation_summary(
         score_rows=score_rows,
@@ -424,6 +436,11 @@ def _clear_generated_files(directory: Path, pattern: str) -> None:
     for path in directory.glob(pattern):
         if path.is_file():
             path.unlink()
+
+
+def _feature_snapshot_id(manifest: PreparedStackManifest) -> str:
+    digest = hashlib.sha256(manifest.path.read_bytes()).hexdigest()[:16]
+    return f"prepared_manifest:{manifest.run.id}:{digest}"
 
 
 def _read_score_rows(path: Path) -> list[dict[str, str]]:

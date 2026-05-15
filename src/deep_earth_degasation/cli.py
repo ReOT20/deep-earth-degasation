@@ -13,6 +13,7 @@ from shapely.geometry.base import BaseGeometry
 from deep_earth_degasation.config import MVPConfig, load_config, resolved_config_dict
 from deep_earth_degasation.io.candidates import SourceProperties, write_candidate_artifacts
 from deep_earth_degasation.io.labeling import write_labeling_table
+from deep_earth_degasation.learning.dataset import LearningDatasetError, write_learning_dataset
 from deep_earth_degasation.morphology.static_detector import (
     StaticDetectorConfig,
     extract_static_candidates,
@@ -147,11 +148,84 @@ def run_mvp(
     typer.echo(f"candidates_geojson={paths.candidates_geojson}")
     typer.echo(f"candidate_scores_csv={paths.candidate_scores_csv}")
     typer.echo(f"labeling_table_csv={paths.labeling_table_csv}")
+    typer.echo(f"learning_dataset_csv={paths.learning_dataset_csv}")
     typer.echo(f"validation_summary_json={paths.validation_summary_json}")
     typer.echo(f"passports_dir={paths.passports_dir}")
     typer.echo(f"time_series_dir={paths.time_series_dir}")
     typer.echo(f"run_manifest_json={paths.run_manifest_json}")
     typer.echo(f"resolved_config_json={paths.resolved_config_json}")
+
+
+@app.command("export-learning-dataset")
+def export_learning_dataset(
+    scores_path: Annotated[
+        Path,
+        typer.Option(
+            "--scores",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Candidate scores CSV.",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            file_okay=True,
+            dir_okay=False,
+            help="Learning dataset CSV to write.",
+        ),
+    ],
+    labels_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--labels",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Optional reviewed labels CSV.",
+        ),
+    ] = None,
+    run_id: Annotated[str, typer.Option("--run-id", help="Run ID to store in the dataset.")] = "",
+    feature_snapshot_id: Annotated[
+        str,
+        typer.Option("--feature-snapshot-id", help="Feature snapshot ID to store in the dataset."),
+    ] = "",
+    aoi_name: Annotated[
+        str,
+        typer.Option("--aoi-name", help="AOI name to store in the dataset."),
+    ] = "",
+    geometry_ref: Annotated[
+        str | None,
+        typer.Option(
+            "--geometry-ref",
+            help=(
+                "Geometry/object reference to store in the dataset. "
+                "Defaults to candidates.geojson next to the scores CSV."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Export candidate scores and optional expert labels for weak/PU learning."""
+    score_rows = _read_score_rows(scores_path)
+    label_rows = _read_score_rows(labels_path) if labels_path is not None else None
+    try:
+        write_learning_dataset(
+            score_rows,
+            output_path,
+            label_rows,
+            run_id=run_id,
+            feature_snapshot_id=feature_snapshot_id,
+            aoi_name=aoi_name,
+            geometry_ref=geometry_ref or str(scores_path.with_name("candidates.geojson")),
+        )
+    except LearningDatasetError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"learning_dataset_csv={output_path}")
 
 
 def _read_score_rows(path: Path) -> list[dict[str, str]]:

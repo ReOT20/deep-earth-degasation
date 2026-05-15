@@ -46,9 +46,9 @@ def test_validation_summary_reports_known_site_recall_and_partial_expert_precisi
         crs=CRS,
     )
     label_rows = [
-        {"candidate_id": "candidate-a", "expert_label": "A"},
-        {"candidate_id": "candidate-b", "expert_label": "N"},
-        {"candidate_id": "candidate-c", "expert_label": "U"},
+        {"candidate_id": "candidate-a", "expert_label": "weak_positive"},
+        {"candidate_id": "candidate-b", "expert_label": "hard_negative"},
+        {"candidate_id": "candidate-c", "expert_label": "unlabeled"},
     ]
 
     summary = build_validation_summary(

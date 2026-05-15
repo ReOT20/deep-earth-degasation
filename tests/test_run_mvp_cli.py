@@ -41,10 +41,12 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert "ranked candidate surface anomalies" in result.output
     assert "not direct H2 detections" in result.output
     assert "validation_summary_json=" in result.output
+    assert "learning_dataset_csv=" in result.output
 
     candidates_geojson = output_dir / "candidates.geojson"
     candidate_scores_csv = output_dir / "candidate_scores.csv"
     labeling_table_csv = output_dir / "labeling_table.csv"
+    learning_dataset_csv = output_dir / "learning_dataset.csv"
     validation_summary_json = output_dir / "validation_summary.json"
     passports_dir = output_dir / "passports"
     time_series_dir = output_dir / "time_series"
@@ -56,6 +58,7 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
         candidates_geojson,
         candidate_scores_csv,
         labeling_table_csv,
+        learning_dataset_csv,
         validation_summary_json,
         run_manifest,
         resolved_config,
@@ -87,6 +90,18 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
         labeling_rows = list(csv.DictReader(file))
     assert labeling_rows[0]["candidate_id"] == score_rows[0]["candidate_id"]
     assert labeling_rows[0]["source_feature_names"] != ""
+
+    with learning_dataset_csv.open(newline="", encoding="utf-8") as file:
+        learning_rows = list(csv.DictReader(file))
+    assert learning_rows[0]["candidate_id"] == score_rows[0]["candidate_id"]
+    assert learning_rows[0]["model_label"] == "unlabeled"
+    assert learning_rows[0]["pu_role"] == "unlabeled_pool"
+    assert learning_rows[0]["split_group"] == "field:plot-1"
+    assert learning_rows[0]["feature_snapshot_id"].startswith(
+        "prepared_manifest:synthetic_dynamic_cli:"
+    )
+    assert learning_rows[0]["feature_snapshot_id"] != "run_manifest.json"
+    assert learning_rows[0]["geometry_ref"] == str(candidates_geojson)
 
     passport_path = Path(score_rows[0]["passport_path"])
     assert passport_path.exists()
