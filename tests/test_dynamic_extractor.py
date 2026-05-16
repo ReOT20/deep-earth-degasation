@@ -8,6 +8,7 @@ from shapely.geometry import box
 from deep_earth_degasation.anomaly.field_normalization import FieldAnomalyLayer
 from deep_earth_degasation.candidates.dynamic_extractor import (
     DynamicExtractionConfig,
+    assign_stable_candidate_ids,
     extract_dynamic_objects,
 )
 
@@ -172,6 +173,51 @@ def test_field_context_honors_custom_field_id_column() -> None:
     )
 
     assert objects["field_id"].iloc[0] == "plot-a"
+    assert objects["candidate_id"].iloc[0].startswith("dyn-plot-a-")
+
+
+def test_stable_ids_are_order_independent() -> None:
+    data = _blank(width=14)
+    _draw_disk(data, center=(5, 3), radius=1, value=10.0)
+    _draw_disk(data, center=(5, 10), radius=1, value=9.0)
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects(
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=50.0, min_diameter_m=5.0),
+    )
+    reordered = assign_stable_candidate_ids(objects.iloc[::-1].reset_index(drop=True))
+
+    assert set(reordered["candidate_id"]) == set(objects["candidate_id"])
+    assert all(candidate_id.startswith("dyn-1-") for candidate_id in objects["candidate_id"])
+
+
+def test_stable_ids_change_for_material_geometry_change() -> None:
+    first = _blank()
+    second = _blank()
+    _draw_disk(first, center=(5, 5), radius=1, value=10.0)
+    _draw_disk(second, center=(5, 6), radius=1, value=10.0)
+    fields = np.ones(first.shape, dtype=int)
+
+    first_objects = extract_dynamic_objects(
+        (_layer("NDMI", first),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=50.0, min_diameter_m=5.0),
+    )
+    second_objects = extract_dynamic_objects(
+        (_layer("NDMI", second),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=50.0, min_diameter_m=5.0),
+    )
+
+    assert first_objects["candidate_id"].iloc[0] != second_objects["candidate_id"].iloc[0]
 
 
 def test_tiny_and_huge_components_are_flagged() -> None:

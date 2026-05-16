@@ -6,12 +6,18 @@ import re
 from pathlib import Path
 from typing import Annotated, Any
 
+import geopandas as gpd
 import typer
 from shapely.geometry import MultiPolygon, Polygon, shape
 from shapely.geometry.base import BaseGeometry
 
 from deep_earth_degasation.config import MVPConfig, load_config, resolved_config_dict
 from deep_earth_degasation.io.candidates import SourceProperties, write_candidate_artifacts
+from deep_earth_degasation.io.label_migration import (
+    LabelMigrationError,
+    migrate_review_labels,
+    write_label_migration_outputs,
+)
 from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.learning.dataset import LearningDatasetError, write_learning_dataset
 from deep_earth_degasation.morphology.static_detector import (
@@ -228,9 +234,96 @@ def export_learning_dataset(
     typer.echo(f"learning_dataset_csv={output_path}")
 
 
+@app.command("migrate-labels")
+def migrate_labels(
+    old_labels_path: Annotated[
+        Path,
+        typer.Option(
+            "--old-labels",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Previously reviewed labeling table CSV.",
+        ),
+    ],
+    old_candidates_path: Annotated[
+        Path,
+        typer.Option(
+            "--old-candidates",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Previous candidates.geojson with reviewed candidate geometries.",
+        ),
+    ],
+    new_labels_path: Annotated[
+        Path,
+        typer.Option(
+            "--new-labels",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="New labeling_table.csv to receive migrated review fields.",
+        ),
+    ],
+    new_candidates_path: Annotated[
+        Path,
+        typer.Option(
+            "--new-candidates",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="New candidates.geojson with refreshed candidate geometries.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            "-o",
+            file_okay=False,
+            dir_okay=True,
+            help="Directory for updated labels and migration reports.",
+        ),
+    ],
+) -> None:
+    """Safely migrate reviewed labels across dynamic candidate reruns."""
+    old_rows, old_fieldnames = _read_csv_rows_and_fieldnames(old_labels_path)
+    new_rows, new_fieldnames = _read_csv_rows_and_fieldnames(new_labels_path)
+    try:
+        result = migrate_review_labels(
+            old_label_rows=old_rows,
+            old_candidates=gpd.read_file(old_candidates_path),
+            new_label_rows=new_rows,
+            new_candidates=gpd.read_file(new_candidates_path),
+        )
+    except LabelMigrationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    write_label_migration_outputs(
+        result,
+        output_dir,
+        updated_fieldnames=new_fieldnames,
+        retired_fieldnames=old_fieldnames,
+    )
+    typer.echo(f"updated_labeling_table_csv={output_dir / 'updated_labeling_table.csv'}")
+    typer.echo(f"label_migration_report_csv={output_dir / 'label_migration_report.csv'}")
+    typer.echo(f"retired_labels_csv={output_dir / 'retired_labels.csv'}")
+    typer.echo(f"new_candidates_csv={output_dir / 'new_candidates.csv'}")
+
+
 def _read_score_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as file:
         return list(csv.DictReader(file))
+
+
+def _read_csv_rows_and_fieldnames(path: Path) -> tuple[list[dict[str, str]], list[str]]:
+    with path.open(newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        return list(reader), list(reader.fieldnames or [])
 
 
 def _passport_paths(score_rows: list[dict[str, str]], passports_dir: Path) -> list[Path]:

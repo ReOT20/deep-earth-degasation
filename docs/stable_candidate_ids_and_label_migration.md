@@ -95,6 +95,17 @@ retired_labels.csv
 new_candidates.csv
 ```
 
+Public CLI helper:
+
+```bash
+degasation migrate-labels \
+  --old-labels path/to/old_labeling_table.csv \
+  --old-candidates path/to/old_candidates.geojson \
+  --new-labels path/to/new_labeling_table.csv \
+  --new-candidates path/to/new_candidates.geojson \
+  --output-dir path/to/label_migration
+```
+
 `label_migration_report.csv` should include:
 
 ```text

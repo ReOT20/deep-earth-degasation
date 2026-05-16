@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,7 +86,30 @@ def extract_dynamic_objects(
             fields,
             field_id_column=field_id_column,
         )
-    return merged_gdf
+    return assign_stable_candidate_ids(merged_gdf)
+
+
+def assign_stable_candidate_ids(objects: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Assign deterministic candidate/object IDs from final field and geometry state."""
+    if objects.empty:
+        return objects
+
+    output = objects.copy()
+    base_ids = [_stable_id_base(row) for _, row in output.iterrows()]
+    id_counts: dict[str, int] = {}
+    for base_id in sorted(set(base_ids)):
+        id_counts[base_id] = base_ids.count(base_id)
+
+    seen: dict[str, int] = {}
+    candidate_ids: list[str] = []
+    for base_id in base_ids:
+        count = seen.get(base_id, 0) + 1
+        seen[base_id] = count
+        candidate_ids.append(base_id if id_counts[base_id] == 1 else f"{base_id}-{count:02d}")
+
+    output["candidate_id"] = candidate_ids
+    output["object_id"] = candidate_ids
+    return output
 
 
 def _field_local_labels(
@@ -261,6 +286,34 @@ def _merged_row(
         "dynamic_object_flags": flags,
         "passes_dynamic_filters": not flags,
     }
+
+
+def _stable_id_base(row: Any) -> str:
+    geometry = row.geometry if hasattr(row, "geometry") else row["geometry"]
+    centroid = geometry.centroid
+    centroid_label = (
+        f"x{_round_to_nearest(centroid.x, 10):.0f}y{_round_to_nearest(centroid.y, 10):.0f}"
+    )
+    field_id = _safe_id_part(str(_row_value(row, "field_id") or "unknownfield"))
+    geometry_hash = hashlib.sha256(geometry.normalize().wkb).hexdigest()[:8]
+    return f"dyn-{field_id}-{centroid_label}-{geometry_hash}"
+
+
+def _round_to_nearest(value: float, step: int) -> float:
+    return round(value / step) * step
+
+
+def _safe_id_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-").lower()
+    return safe or "unknownfield"
+
+
+def _row_value(row: Any, key: str) -> object | None:
+    if hasattr(row, "index") and key in row.index:
+        return row[key]
+    if isinstance(row, dict):
+        return row.get(key)
+    return None
 
 
 def _merge_feature_stats(
