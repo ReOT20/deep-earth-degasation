@@ -5,6 +5,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
 import numpy as np
@@ -30,6 +31,7 @@ from deep_earth_degasation.features.spectral import sentinel2_features_from_stac
 from deep_earth_degasation.features.thermal import landsat_thermal_features_from_stack
 from deep_earth_degasation.features.types import DynamicFeatureLayer, DynamicFeatureResult
 from deep_earth_degasation.io.candidates import (
+    candidate_object_score_rows,
     write_candidate_object_scores_csv,
     write_candidate_object_time_series,
     write_candidate_objects_geojson,
@@ -41,6 +43,7 @@ from deep_earth_degasation.io.vector import VectorLayer, load_vector_layer
 from deep_earth_degasation.learning.dataset import write_learning_dataset
 from deep_earth_degasation.pipeline.manifest import PreparedStackManifest
 from deep_earth_degasation.reports.passport import write_candidate_passport
+from deep_earth_degasation.reports.quicklook import write_quicklook_png
 from deep_earth_degasation.scoring import score_candidate_objects
 from deep_earth_degasation.validation.summary import (
     build_validation_summary,
@@ -63,6 +66,7 @@ class DynamicMVPArtifactPaths:
     validation_summary_json: Path
     passports_dir: Path
     time_series_dir: Path
+    quicklooks_dir: Path
     run_manifest_json: Path
     resolved_config_json: Path
     anomaly_map_npy: Path
@@ -83,7 +87,7 @@ def run_dynamic_mvp(
     fields = _required_vector(vectors, "fields").data
     field_id_column = manifest.vectors["fields"].id_field or "stable_id"
     field_ids = _rasterize_fields(fields, reference_layer, field_id_column=field_id_column)
-    features, feature_flags = _dynamic_features(stack, reference_layer)
+    features, feature_flags = _dynamic_features(stack, reference_layer, config)
     anomaly_layers, anomaly_flags = _field_anomaly_layers(
         features,
         field_ids,
@@ -107,7 +111,16 @@ def run_dynamic_mvp(
             _false_positive_filter_config(config),
         )
         objects = _append_missing_flags(objects, (*feature_flags, *anomaly_flags))
-        objects = score_candidate_objects(objects)
+        objects = _append_dynamic_detector_flags(objects, config)
+        objects = score_candidate_objects(
+            objects,
+            config.scoring,
+            min_repeated_seasons=(
+                config.dynamic_detector.min_repeated_seasons
+                if config.dynamic_detector is not None
+                else 2
+            ),
+        )
 
     paths = DynamicMVPArtifactPaths(
         output_dir=output_dir,
@@ -118,6 +131,7 @@ def run_dynamic_mvp(
         validation_summary_json=output_dir / "validation_summary.json",
         passports_dir=output_dir / "passports",
         time_series_dir=output_dir / "time_series",
+        quicklooks_dir=output_dir / "quicklooks",
         run_manifest_json=output_dir / "run_manifest.json",
         resolved_config_json=output_dir / "resolved_config.json",
         anomaly_map_npy=output_dir / "anomaly_maps" / "composite_anomaly.npy",
@@ -207,6 +221,7 @@ def _rasterize_fields(
 def _dynamic_features(
     stack: RasterStack,
     reference_layer: RasterLayer,
+    config: MVPConfig,
 ) -> tuple[tuple[DynamicFeatureLayer, ...], tuple[str, ...]]:
     results = (
         sentinel2_features_from_stack(stack),
@@ -216,7 +231,7 @@ def _dynamic_features(
     features: list[DynamicFeatureLayer] = []
     flags: list[str] = []
     for result in results:
-        features.extend(_matching_grid_features(result, reference_layer, flags))
+        features.extend(_matching_grid_features(result, reference_layer, flags, config))
         flags.extend(result.missing_data_flags)
     return tuple(features), tuple(sorted(set(flags)))
 
@@ -225,14 +240,30 @@ def _matching_grid_features(
     result: DynamicFeatureResult,
     reference_layer: RasterLayer,
     flags: list[str],
+    config: MVPConfig,
 ) -> list[DynamicFeatureLayer]:
     features: list[DynamicFeatureLayer] = []
     for feature in result.features:
         if feature.data.shape != reference_layer.shape:
             flags.append(f"skipped_grid_mismatch_{feature.name}_{feature.date or 'undated'}")
             continue
+        if not _feature_in_configured_time_window(feature, config):
+            flags.append(f"skipped_out_of_window_{feature.name}_{feature.date or 'undated'}")
+            continue
         features.append(feature)
     return features
+
+
+def _feature_in_configured_time_window(feature: DynamicFeatureLayer, config: MVPConfig) -> bool:
+    if feature.date is None:
+        return True
+    month = int(feature.date[5:7])
+    name = feature.name.lower()
+    if any(token in name for token in ("ndvi", "red_edge", "red-edge", "vegetation")):
+        return month in config.time.vegetation_months
+    if any(token in name for token in ("bsi", "brightness", "bare_soil", "bare-soil")):
+        return month in config.time.bare_soil_months
+    return True
 
 
 def _field_anomaly_layers(
@@ -298,13 +329,18 @@ def _dynamic_extraction_config(config: MVPConfig) -> DynamicExtractionConfig:
             if dynamic is not None and dynamic.merge_distance_m is not None
             else 30.0
         ),
+        merge_across_dates=(
+            dynamic.merge_across_dates
+            if dynamic is not None and dynamic.merge_across_dates is not None
+            else True
+        ),
     )
 
 
 def _false_positive_filter_config(config: MVPConfig) -> FalsePositiveFilterConfig:
     filters = config.false_positive_filters
     if filters is None:
-        return FalsePositiveFilterConfig()
+        return FalsePositiveFilterConfig(penalties=_false_positive_penalties(config))
     return FalsePositiveFilterConfig(
         flag_roads=filters.flag_roads,
         flag_water=filters.flag_water,
@@ -324,7 +360,24 @@ def _false_positive_filter_config(config: MVPConfig) -> FalsePositiveFilterConfi
         builtup_buffer_m=filters.builtup_buffer_m or 50.0,
         field_edge_buffer_m=filters.field_edge_buffer_m or 20.0,
         max_elongation_without_penalty=filters.max_elongation_without_penalty or 4.0,
+        penalties=_false_positive_penalties(config),
     )
+
+
+def _false_positive_penalties(config: MVPConfig) -> dict[str, float]:
+    default_penalties = FalsePositiveFilterConfig().penalties
+    filters = config.false_positive_filters
+    if filters is not None and not filters.use_penalties:
+        return {key: 0.0 for key in default_penalties}
+
+    penalties = dict(default_penalties)
+    configured = config.scoring.penalties
+    if configured is None:
+        return penalties
+    for key, value in configured.model_dump().items():
+        if value is not None:
+            penalties[key] = float(value)
+    return penalties
 
 
 def _false_positive_context(vectors: dict[str, VectorLayer | None]) -> FalsePositiveContext:
@@ -357,6 +410,41 @@ def _append_missing_flags(objects: gpd.GeoDataFrame, flags: tuple[str, ...]) -> 
     return output
 
 
+def _append_dynamic_detector_flags(
+    objects: gpd.GeoDataFrame,
+    config: MVPConfig,
+) -> gpd.GeoDataFrame:
+    dynamic = config.dynamic_detector
+    if dynamic is None:
+        return objects
+
+    output = objects.copy()
+    missing_data_flags: list[tuple[str, ...]] = []
+    for _, row in output.iterrows():
+        existing_flags = (
+            _list_value(row["missing_data_flags"]) if "missing_data_flags" in row.index else ()
+        )
+        missing_data_flags.append(
+            tuple(
+                sorted(
+                    set(existing_flags)
+                    | _dynamic_detector_missing_flags(
+                        row, dynamic.min_valid_observations_per_season
+                    )
+                )
+            )
+        )
+    output["missing_data_flags"] = missing_data_flags
+    return output
+
+
+def _dynamic_detector_missing_flags(row: object, min_valid_observations: int) -> set[str]:
+    source_count = _numeric_row_value(row, "source_detection_count")
+    if source_count is None or source_count >= min_valid_observations:
+        return set()
+    return {"below_min_valid_observations_per_season"}
+
+
 def _write_artifacts(
     paths: DynamicMVPArtifactPaths,
     objects: gpd.GeoDataFrame,
@@ -366,55 +454,101 @@ def _write_artifacts(
     *,
     known_sites: gpd.GeoDataFrame | None,
 ) -> None:
-    paths.passports_dir.mkdir(parents=True, exist_ok=True)
-    paths.time_series_dir.mkdir(parents=True, exist_ok=True)
     paths.anomaly_map_npy.parent.mkdir(parents=True, exist_ok=True)
-    _clear_generated_files(paths.passports_dir, "dynamic-object-*.md")
-    _clear_generated_files(paths.time_series_dir, "dynamic-object-*.csv")
-    write_candidate_objects_geojson(
-        objects, paths.candidates_geojson, passports_dir=paths.passports_dir
-    )
-    write_candidate_object_scores_csv(
+    output_config = config.outputs
+    review_limit = max(0, output_config.candidates_top_n)
+    passports_dir = paths.passports_dir if output_config.generate_passports else None
+    score_rows = candidate_object_score_rows(
         objects,
-        paths.candidate_scores_csv,
-        passports_dir=paths.passports_dir,
+        passports_dir=passports_dir,
+        passport_path_limit=review_limit,
     )
-    score_rows = _read_score_rows(paths.candidate_scores_csv)
-    write_labeling_table(score_rows, paths.labeling_table_csv)
+    review_score_rows = candidate_object_score_rows(
+        objects,
+        passports_dir=passports_dir,
+        limit=review_limit,
+        passport_path_limit=review_limit,
+    )
+
+    if output_config.export_geojson:
+        write_candidate_objects_geojson(
+            objects,
+            paths.candidates_geojson,
+            passports_dir=passports_dir,
+            passport_path_limit=review_limit,
+        )
+    else:
+        _unlink_if_exists(paths.candidates_geojson)
+
+    if output_config.export_csv:
+        write_candidate_object_scores_csv(
+            objects,
+            paths.candidate_scores_csv,
+            passports_dir=passports_dir,
+            passport_path_limit=review_limit,
+        )
+    else:
+        _unlink_if_exists(paths.candidate_scores_csv)
+
+    write_labeling_table(review_score_rows, paths.labeling_table_csv)
     write_learning_dataset(
         score_rows,
         paths.learning_dataset_csv,
         run_id=stack.manifest.run.id,
         feature_snapshot_id=_feature_snapshot_id(stack.manifest),
         aoi_name=config.aoi.name,
-        geometry_ref=str(paths.candidates_geojson),
+        geometry_ref=str(paths.candidates_geojson) if output_config.export_geojson else "",
     )
     validation_config = config.validation
-    validation_summary = build_validation_summary(
-        score_rows=score_rows,
-        candidates=objects,
-        known_sites=known_sites,
-        top_n=validation_config.top_n if validation_config is not None else 20,
-        known_site_recall_top_n=(
-            tuple(validation_config.known_site_recall_top_n)
-            if validation_config is not None
-            else ()
-        ),
-        expert_precision_top_n=(
-            validation_config.expert_precision_top_n if validation_config is not None else None
-        ),
-        guardrail=GUARDRAIL_MESSAGE,
-    )
-    write_validation_summary(validation_summary, paths.validation_summary_json)
-    for score_row in score_rows:
-        passport_path = Path(score_row["passport_path"])
-        write_candidate_passport(score_row, passport_path)
-    write_candidate_object_time_series(objects, paths.time_series_dir)
+    if output_config.export_validation_summary is not False:
+        validation_summary = build_validation_summary(
+            score_rows=score_rows,
+            candidates=objects,
+            known_sites=known_sites,
+            top_n=validation_config.top_n if validation_config is not None else 20,
+            known_site_recall_top_n=(
+                tuple(validation_config.known_site_recall_top_n)
+                if validation_config is not None
+                else ()
+            ),
+            expert_precision_top_n=(
+                validation_config.expert_precision_top_n if validation_config is not None else None
+            ),
+            guardrail=GUARDRAIL_MESSAGE,
+        )
+        write_validation_summary(validation_summary, paths.validation_summary_json)
+    else:
+        _unlink_if_exists(paths.validation_summary_json)
+
+    if output_config.generate_passports:
+        paths.passports_dir.mkdir(parents=True, exist_ok=True)
+        _clear_generated_files(paths.passports_dir, "dynamic-*.md")
+        for score_row in review_score_rows:
+            passport_path = Path(str(score_row["passport_path"]))
+            write_candidate_passport(score_row, passport_path)
+    elif paths.passports_dir.exists():
+        _clear_generated_files(paths.passports_dir, "dynamic-*.md")
+
+    if output_config.export_time_series is not False:
+        _clear_generated_files(paths.time_series_dir, "dynamic-*.csv")
+        write_candidate_object_time_series(objects, paths.time_series_dir, limit=review_limit)
+    elif paths.time_series_dir.exists():
+        _clear_generated_files(paths.time_series_dir, "dynamic-*.csv")
+
+    if output_config.generate_quicklooks is True:
+        _clear_generated_files(paths.quicklooks_dir, "dynamic-*.png")
+        _write_quicklooks(objects, composite, paths.quicklooks_dir, limit=review_limit)
+    elif paths.quicklooks_dir.exists():
+        _clear_generated_files(paths.quicklooks_dir, "dynamic-*.png")
+
     write_raster_run_manifest(stack, paths.run_manifest_json)
-    paths.resolved_config_json.write_text(
-        json.dumps(resolved_config_dict(config), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if output_config.export_resolved_config:
+        paths.resolved_config_json.write_text(
+            json.dumps(resolved_config_dict(config), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        _unlink_if_exists(paths.resolved_config_json)
     np.save(paths.anomaly_map_npy, composite.data)
     paths.anomaly_map_metadata_json.write_text(
         json.dumps(
@@ -433,9 +567,33 @@ def _write_artifacts(
 
 
 def _clear_generated_files(directory: Path, pattern: str) -> None:
+    if not directory.exists():
+        return
     for path in directory.glob(pattern):
         if path.is_file():
             path.unlink()
+
+
+def _unlink_if_exists(path: Path) -> None:
+    if path.exists() and path.is_file():
+        path.unlink()
+
+
+def _write_quicklooks(
+    objects: gpd.GeoDataFrame,
+    composite: CompositeAnomalyMap,
+    output_dir: Path,
+    *,
+    limit: int,
+) -> None:
+    for score_row in candidate_object_score_rows(objects, limit=limit):
+        candidate_id = str(score_row["candidate_id"])
+        rank = int(score_row["rank"])
+        write_quicklook_png(
+            composite.data,
+            output_dir / f"dynamic-object-{rank:06d}.png",
+            title=candidate_id,
+        )
 
 
 def _feature_snapshot_id(manifest: PreparedStackManifest) -> str:
@@ -456,3 +614,11 @@ def _list_value(value: object) -> tuple[str, ...]:
     if isinstance(value, list | tuple | set):
         return tuple(str(item) for item in value)
     return (str(value),)
+
+
+def _numeric_row_value(row: Any, key: str) -> float | None:
+    if hasattr(row, "index") and key in row.index:
+        value = row[key]
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+    return None

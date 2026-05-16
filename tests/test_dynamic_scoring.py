@@ -5,6 +5,7 @@ import pytest
 from shapely.geometry import Point, box
 
 from deep_earth_degasation.candidates.fusion import fuse_static_dynamic_candidates
+from deep_earth_degasation.config import PriorityThresholds, ScoreWeights, ScoringConfig
 from deep_earth_degasation.morphology.static_detector import extract_static_candidates
 from deep_earth_degasation.scoring import score_candidate_objects
 
@@ -91,6 +92,62 @@ def test_cropland_dynamic_only_object_score_uses_morphology() -> None:
     regular = scored[scored["candidate_id"] == "regular-object"].iloc[0]
     irregular = scored[scored["candidate_id"] == "irregular-object"].iloc[0]
     assert regular["object_score"] > irregular["object_score"]
+
+
+def test_configured_scoring_weights_change_scores() -> None:
+    candidates = _candidates(
+        [
+            _row(
+                candidate_id="moisture-only",
+                evidence_class="dynamic_only",
+                static_score=None,
+                per_feature_max={"NDMI": 3.0},
+            )
+        ]
+    )
+
+    moisture_weighted = score_candidate_objects(
+        candidates,
+        ScoringConfig(cropland=ScoreWeights(moisture_weight=1.0)),
+    )
+    brightness_weighted = score_candidate_objects(
+        candidates,
+        ScoringConfig(cropland=ScoreWeights(brightness_weight=1.0)),
+    )
+
+    assert moisture_weighted["dynamic_score"].iloc[0] > brightness_weighted["dynamic_score"].iloc[0]
+    assert moisture_weighted["object_score"].iloc[0] > brightness_weighted["object_score"].iloc[0]
+
+
+def test_configured_priority_thresholds_change_classes() -> None:
+    candidates = _candidates(
+        [
+            _row(
+                candidate_id="moderate",
+                evidence_class="dynamic_only",
+                static_score=None,
+                per_feature_max={"NDMI": 3.0},
+            )
+        ]
+    )
+
+    high_thresholds = score_candidate_objects(
+        candidates,
+        ScoringConfig(
+            cropland=ScoreWeights(moisture_weight=0.5),
+            priority_thresholds=PriorityThresholds(A=0.95, B=0.75, C=0.50, D=0.0),
+        ),
+    )
+    low_thresholds = score_candidate_objects(
+        candidates,
+        ScoringConfig(
+            cropland=ScoreWeights(moisture_weight=0.5),
+            priority_thresholds=PriorityThresholds(A=0.10, B=0.05, C=0.01, D=0.0),
+        ),
+    )
+
+    assert high_thresholds["priority_class"].iloc[0] != low_thresholds["priority_class"].iloc[0]
+    assert low_thresholds["priority_class"].iloc[0] == "A"
 
 
 def test_real_fused_rows_score_from_preserved_multisensor_dynamic_evidence() -> None:

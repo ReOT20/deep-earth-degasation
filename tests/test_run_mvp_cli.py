@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
 import numpy as np
@@ -142,7 +144,225 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert not stale_time_series.exists()
 
 
+def test_run_mvp_penalty_toggle_keeps_flags_without_score_penalty(tmp_path: Path) -> None:
+    true_config_path = _write_config(tmp_path / "penalties_true")
+    true_manifest_path = _write_prepared_data(tmp_path / "penalties_true")
+    false_config_path = _write_config(tmp_path / "penalties_false")
+    false_manifest_path = _write_prepared_data(tmp_path / "penalties_false")
+    _update_config(
+        true_config_path,
+        lambda config: config["scoring"].update({"penalties": {"road": 0.6}}),
+    )
+    _update_config(
+        false_config_path,
+        lambda config: (
+            config["scoring"].update({"penalties": {"road": 0.6}}),
+            config["false_positive_filters"].update({"use_penalties": False}),
+        ),
+    )
+
+    true_output = tmp_path / "true_outputs"
+    false_output = tmp_path / "false_outputs"
+    true_result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(true_config_path),
+            "--data-manifest",
+            str(true_manifest_path),
+            "--output-dir",
+            str(true_output),
+        ],
+    )
+    false_result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(false_config_path),
+            "--data-manifest",
+            str(false_manifest_path),
+            "--output-dir",
+            str(false_output),
+        ],
+    )
+
+    assert true_result.exit_code == 0, true_result.output
+    assert false_result.exit_code == 0, false_result.output
+    true_row = _read_csv_rows(true_output / "candidate_scores.csv")[0]
+    false_row = _read_csv_rows(false_output / "candidate_scores.csv")[0]
+    assert "road_risk" in false_row["false_positive_flags"]
+    assert float(true_row["false_positive_penalty"]) == 0.6
+    assert float(false_row["false_positive_penalty"]) == 0.0
+    assert float(false_row["object_score"]) > float(true_row["object_score"])
+
+
+def test_run_mvp_output_toggles_control_artifacts(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: config["outputs"].update(
+            {
+                "export_geojson": False,
+                "export_csv": False,
+                "generate_passports": False,
+                "generate_quicklooks": False,
+                "export_time_series": False,
+                "export_validation_summary": False,
+                "export_resolved_config": False,
+            }
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (output_dir / "candidates.geojson").exists()
+    assert not (output_dir / "candidate_scores.csv").exists()
+    assert not (output_dir / "validation_summary.json").exists()
+    assert not (output_dir / "resolved_config.json").exists()
+    assert not list((output_dir / "passports").glob("*.md"))
+    assert not list((output_dir / "time_series").glob("*.csv"))
+    assert not list((output_dir / "quicklooks").glob("*.png"))
+    assert (output_dir / "labeling_table.csv").exists()
+    assert (output_dir / "learning_dataset.csv").exists()
+
+
+def test_candidates_top_n_limits_review_exports(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: (
+            config["outputs"].update(
+                {
+                    "candidates_top_n": 2,
+                    "generate_quicklooks": True,
+                    "export_time_series": True,
+                }
+            ),
+            config["dynamic_detector"].update({"merge_across_dates": False}),
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    score_rows = _read_csv_rows(output_dir / "candidate_scores.csv")
+    assert len(score_rows) > 2
+    top_passport_paths = [Path(row["passport_path"]) for row in score_rows[:2]]
+    assert all(path.exists() for path in top_passport_paths)
+    assert all(row["passport_path"] == "" for row in score_rows[2:])
+    candidate_data = json.loads((output_dir / "candidates.geojson").read_text(encoding="utf-8"))
+    features = candidate_data["features"]
+    assert len(features) == len(score_rows)
+    feature_passport_paths = [feature["properties"]["passport_path"] for feature in features]
+    assert all(Path(path).exists() for path in feature_passport_paths[:2])
+    assert feature_passport_paths[2:] == [""] * (len(feature_passport_paths) - 2)
+    assert len(_read_csv_rows(output_dir / "labeling_table.csv")) == 2
+    assert len(list((output_dir / "passports").glob("*.md"))) == 2
+    assert len(list((output_dir / "time_series").glob("*.csv"))) == 2
+    assert len(list((output_dir / "quicklooks").glob("*.png"))) == 2
+
+
+def test_merge_across_dates_toggle_changes_candidate_count(tmp_path: Path) -> None:
+    merged_config_path = _write_config(tmp_path / "merged")
+    merged_manifest_path = _write_prepared_data(tmp_path / "merged")
+    unmerged_config_path = _write_config(tmp_path / "unmerged")
+    unmerged_manifest_path = _write_prepared_data(tmp_path / "unmerged")
+    _update_config(
+        unmerged_config_path,
+        lambda config: config["dynamic_detector"].update({"merge_across_dates": False}),
+    )
+
+    merged_result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(merged_config_path),
+            "--data-manifest",
+            str(merged_manifest_path),
+            "--output-dir",
+            str(tmp_path / "merged_outputs"),
+        ],
+    )
+    unmerged_result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(unmerged_config_path),
+            "--data-manifest",
+            str(unmerged_manifest_path),
+            "--output-dir",
+            str(tmp_path / "unmerged_outputs"),
+        ],
+    )
+
+    assert merged_result.exit_code == 0, merged_result.output
+    assert unmerged_result.exit_code == 0, unmerged_result.output
+    assert len(_read_csv_rows(tmp_path / "unmerged_outputs" / "candidate_scores.csv")) > len(
+        _read_csv_rows(tmp_path / "merged_outputs" / "candidate_scores.csv")
+    )
+
+
+def test_time_windows_exclude_out_of_window_components(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: config["time"].update({"vegetation_months": [6], "bare_soil_months": [5]}),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
+    assert row["vegetation_stress"] == ""
+    assert "skipped_out_of_window_NDVI_2024-05-15" in row["missing_data_flags"]
+
+
 def _write_config(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config = {
         "project": {
             "name": "synthetic_dynamic_mvp",
@@ -241,6 +461,7 @@ def _write_config(tmp_path: Path) -> Path:
 
 
 def _write_prepared_data(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     aoi_path = tmp_path / "aoi.geojson"
     fields_path = tmp_path / "fields.geojson"
     roads_path = tmp_path / "roads.geojson"
@@ -292,6 +513,17 @@ def _write_prepared_data(tmp_path: Path) -> Path:
     manifest_path = tmp_path / "manifest.yaml"
     manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     return manifest_path
+
+
+def _update_config(path: Path, update: Callable[[dict[str, Any]], object]) -> None:
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    update(config)
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as file:
+        return list(csv.DictReader(file))
 
 
 def _write_vector(path: Path, properties: dict[str, list[str]], geometries: list[object]) -> None:

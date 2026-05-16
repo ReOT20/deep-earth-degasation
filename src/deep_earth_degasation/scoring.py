@@ -7,12 +7,25 @@ from typing import Any
 import geopandas as gpd
 from shapely.geometry.base import BaseGeometry
 
+from deep_earth_degasation.config import PriorityThresholds, ScoreWeights, ScoringConfig
 from deep_earth_degasation.morphology.shape import compute_shape_metrics
 
 _STRONG_ANOMALY_ZSCORE = 3.0
 _STATIC_ONLY_SCORE_CAP = 0.70
 _FOREST_BRANCH_MISSING_FLAG = "missing_forest_branch_scoring"
 _MIXED_BRANCH_MISSING_FLAG = "missing_mixed_branch_scoring"
+_DEFAULT_CROPLAND_WEIGHTS = {
+    "moisture_anomaly": 0.20,
+    "vegetation_stress": 0.15,
+    "soil_brightness_bsi": 0.15,
+    "thermal_anomaly": 0.10,
+    "sar_anomaly": 0.10,
+    "morphology": 0.10,
+    "persistence": 0.10,
+    "post_rain_drying": 0.05,
+    "geology_context": 0.05,
+}
+_DEFAULT_PRIORITY_THRESHOLDS = PriorityThresholds(A=0.75, B=0.55, C=0.35, D=0.0)
 
 
 @dataclass
@@ -42,17 +55,12 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def score_cropland(e: CandidateEvidence) -> float:
+def score_cropland(e: CandidateEvidence, weights: ScoreWeights | None = None) -> float:
     score = (
-        0.20 * e.moisture_anomaly
-        + 0.15 * e.vegetation_stress
-        + 0.15 * e.soil_brightness_bsi
-        + 0.10 * e.thermal_anomaly
-        + 0.10 * e.sar_anomaly
-        + 0.10 * e.morphology
-        + 0.10 * e.persistence
-        + 0.05 * e.post_rain_drying
-        + 0.05 * e.geology_context
+        sum(
+            weight * getattr(e, field_name)
+            for field_name, weight in _cropland_weight_values(weights).items()
+        )
         - e.false_positive_penalty
     )
     return _clamp01(score)
@@ -104,17 +112,23 @@ def score_candidate(e: CandidateEvidence) -> float:
     )
 
 
-def priority_class(score: float) -> str:
-    if score >= 0.75:
+def priority_class(score: float, thresholds: PriorityThresholds | None = None) -> str:
+    active_thresholds = thresholds or _DEFAULT_PRIORITY_THRESHOLDS
+    if score >= active_thresholds.A:
         return "A"
-    if score >= 0.55:
+    if score >= active_thresholds.B:
         return "B"
-    if score >= 0.35:
+    if score >= active_thresholds.C:
         return "C"
     return "D"
 
 
-def score_candidate_objects(candidates: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def score_candidate_objects(
+    candidates: gpd.GeoDataFrame,
+    scoring_config: ScoringConfig | None = None,
+    *,
+    min_repeated_seasons: int = 2,
+) -> gpd.GeoDataFrame:
     """Add object-level review scores to static, dynamic or fused candidate objects."""
     output = candidates.copy()
     static_scores: list[float] = []
@@ -133,6 +147,8 @@ def score_candidate_objects(candidates: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             row,
             landcover_branch=landcover_branch,
             morphology_score=morphology_score,
+            scoring_config=scoring_config,
+            min_repeated_seasons=min_repeated_seasons,
         )
         penalty = _score_value(_row_value(row, "false_positive_penalty"))
         missing_data_flags = list(_tuple_value(_row_value(row, "missing_data_flags")))
@@ -157,7 +173,12 @@ def score_candidate_objects(candidates: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         static_scores.append(static_score)
         object_scores.append(object_score)
         dynamic_scores.append(dynamic_score)
-        priority_classes.append(priority_class(object_score))
+        priority_classes.append(
+            priority_class(
+                object_score,
+                None if scoring_config is None else scoring_config.priority_thresholds,
+            )
+        )
         dominant_evidence_values.append(
             _dominant_evidence(
                 evidence_class=evidence_class,
@@ -196,7 +217,14 @@ def _object_score(
     return _clamp01(base_score - penalty)
 
 
-def _dynamic_score(row: Any, *, landcover_branch: str, morphology_score: float) -> float:
+def _dynamic_score(
+    row: Any,
+    *,
+    landcover_branch: str,
+    morphology_score: float,
+    scoring_config: ScoringConfig | None,
+    min_repeated_seasons: int,
+) -> float:
     component_values = _component_values(row)
     if landcover_branch != "cropland":
         return _generic_dynamic_score(row, component_values)
@@ -210,12 +238,36 @@ def _dynamic_score(row: Any, *, landcover_branch: str, morphology_score: float) 
             thermal_anomaly=component_values.get("thermal", 0.0),
             sar_anomaly=component_values.get("sar", 0.0),
             morphology=morphology_score,
-            persistence=_persistence_score(row),
+            persistence=_persistence_score(row, min_repeated_seasons=min_repeated_seasons),
             post_rain_drying=component_values.get("post_rain", 0.0),
             geology_context=component_values.get("geology", 0.0),
         )
-        return score_cropland(evidence)
+        return score_cropland(
+            evidence,
+            None if scoring_config is None else scoring_config.cropland,
+        )
     return _generic_dynamic_score(row, component_values)
+
+
+def _cropland_weight_values(weights: ScoreWeights | None) -> dict[str, float]:
+    if weights is None:
+        return _DEFAULT_CROPLAND_WEIGHTS
+
+    configured = {
+        "moisture_anomaly": weights.moisture_weight,
+        "vegetation_stress": weights.vegetation_weight,
+        "soil_brightness_bsi": weights.brightness_weight,
+        "thermal_anomaly": weights.thermal_weight,
+        "sar_anomaly": weights.sar_weight,
+        "morphology": weights.morphology_weight,
+        "persistence": weights.persistence_weight,
+        "post_rain_drying": weights.post_rain_weight,
+        "geology_context": weights.geology_weight,
+    }
+    active = {
+        field_name: float(weight) for field_name, weight in configured.items() if weight is not None
+    }
+    return active or _DEFAULT_CROPLAND_WEIGHTS
 
 
 def _generic_dynamic_score(row: Any, component_values: dict[str, float]) -> float:
@@ -280,15 +332,16 @@ def _feature_component(feature_name: str) -> str | None:
     return None
 
 
-def _persistence_score(row: Any) -> float:
+def _persistence_score(row: Any, *, min_repeated_seasons: int) -> float:
+    target = max(1, int(min_repeated_seasons))
     repeated_seasons = _score_value(_row_value(row, "repeated_seasons"))
     if repeated_seasons > 0:
-        return _clamp01(repeated_seasons / 2.0)
+        return _clamp01(repeated_seasons / target)
 
     dates = _tuple_value(_row_value(row, "anomalous_dates"))
     seasons = {str(date)[:4] for date in dates if str(date)}
     if seasons:
-        return _clamp01(len(seasons) / 2.0)
+        return _clamp01(len(seasons) / target)
     return 0.0
 
 

@@ -29,6 +29,7 @@ class DynamicExtractionConfig:
     max_diameter_m: float = 1_000.0
     max_elongation: float = 4.0
     merge_distance_m: float = 30.0
+    merge_across_dates: bool = True
     connectivity: int = 2
 
 
@@ -72,7 +73,11 @@ def extract_dynamic_objects(
         return _empty_objects(crs)
 
     detections_gdf = gpd.GeoDataFrame(detections, geometry="geometry", crs=crs)
-    merged_gdf = _merge_repeated_detections(detections_gdf, extraction_config)
+    merged_gdf = (
+        _merge_repeated_detections(detections_gdf, extraction_config)
+        if extraction_config.merge_across_dates
+        else detections_gdf
+    )
     if fields is not None and not merged_gdf.empty:
         merged_gdf = assign_field_context(
             merged_gdf,

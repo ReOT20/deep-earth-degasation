@@ -260,6 +260,8 @@ def write_candidate_objects_geojson(
     path: Path,
     *,
     passports_dir: Path | None = None,
+    limit: int | None = None,
+    passport_path_limit: int | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     feature_collection = {
@@ -267,9 +269,16 @@ def write_candidate_objects_geojson(
         "features": [
             candidate_object_to_feature(
                 candidate,
-                _object_passport_path(candidate, rank, passports_dir),
+                _object_passport_path(
+                    candidate,
+                    rank,
+                    passports_dir,
+                    passport_path_limit=passport_path_limit,
+                ),
             )
-            for rank, candidate in enumerate(_ranked_candidate_object_rows(candidates), start=1)
+            for rank, candidate in enumerate(
+                _ranked_candidate_object_rows(candidates, limit=limit), start=1
+            )
         ],
     }
     crs = _candidate_objects_crs(candidates)
@@ -285,20 +294,56 @@ def write_candidate_object_scores_csv(
     path: Path,
     *,
     passports_dir: Path | None = None,
+    limit: int | None = None,
+    passport_path_limit: int | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=SCORE_FIELDNAMES)
         writer.writeheader()
-        for rank, candidate in enumerate(_ranked_candidate_object_rows(candidates), start=1):
-            passport_path = _object_passport_path(candidate, rank, passports_dir)
-            writer.writerow(candidate_object_to_score_row(candidate, rank, passport_path))
+        writer.writerows(
+            candidate_object_score_rows(
+                candidates,
+                passports_dir=passports_dir,
+                limit=limit,
+                passport_path_limit=passport_path_limit,
+            )
+        )
 
 
-def write_candidate_object_time_series(candidates: Any, output_dir: Path) -> list[Path]:
+def candidate_object_score_rows(
+    candidates: Any,
+    *,
+    passports_dir: Path | None = None,
+    limit: int | None = None,
+    passport_path_limit: int | None = None,
+) -> list[dict[str, str | int | float]]:
+    """Return ranked score rows for dynamic or fused object candidates."""
+    return [
+        candidate_object_to_score_row(
+            candidate,
+            rank,
+            _object_passport_path(
+                candidate,
+                rank,
+                passports_dir,
+                passport_path_limit=passport_path_limit,
+            ),
+        )
+        for rank, candidate in enumerate(
+            _ranked_candidate_object_rows(candidates, limit=limit), start=1
+        )
+    ]
+
+
+def write_candidate_object_time_series(
+    candidates: Any, output_dir: Path, *, limit: int | None = None
+) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for rank, candidate in enumerate(_candidate_object_rows(candidates), start=1):
+    for rank, candidate in enumerate(
+        _ranked_candidate_object_rows(candidates, limit=limit), start=1
+    ):
         rows = _object_time_series_rows(candidate)
         if not rows:
             continue
@@ -381,14 +426,15 @@ def _candidate_object_rows(candidates: Any) -> list[Any]:
     return list(candidates)
 
 
-def _ranked_candidate_object_rows(candidates: Any) -> list[Any]:
-    return sorted(
+def _ranked_candidate_object_rows(candidates: Any, *, limit: int | None = None) -> list[Any]:
+    rows = sorted(
         _candidate_object_rows(candidates),
         key=lambda candidate: (
             -_sortable_score(_object_value(candidate, "object_score")),
             _object_candidate_id(candidate),
         ),
     )
+    return rows if limit is None else rows[: max(0, limit)]
 
 
 def _candidate_objects_crs(candidates: Any) -> str:
@@ -548,10 +594,18 @@ def _score_value(value: object) -> str | float:
     return ""
 
 
-def _object_passport_path(candidate: Any, rank: int, passports_dir: Path | None) -> Path | str:
+def _object_passport_path(
+    candidate: Any,
+    rank: int,
+    passports_dir: Path | None,
+    *,
+    passport_path_limit: int | None = None,
+) -> Path | str:
     if passports_dir is None:
         value = _object_value(candidate, "passport_path")
         return "" if value is None else str(value)
+    if passport_path_limit is not None and rank > passport_path_limit:
+        return ""
     return passports_dir / f"{_safe_filename_stem(_object_candidate_id(candidate), rank)}.md"
 
 
