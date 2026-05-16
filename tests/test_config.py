@@ -33,6 +33,12 @@ def test_dynamic_template_config_loads_with_planned_sections() -> None:
     assert config.features is not None
     assert config.anomaly_components["geology_context"].weight == 0.04
     assert config.validation is not None
+    assert config.false_positive_filters is not None
+    assert config.false_positive_filters.flag_excluded_zones is False
+    assert config.false_positive_filters.flag_woody_patches is True
+    assert config.false_positive_filters.woody_patch_buffer_m == 20
+    assert config.scoring.penalties is not None
+    assert config.scoring.penalties.woody_patch == 0.25
     assert config.outputs.export_resolved_config is True
 
 

@@ -39,7 +39,7 @@ from deep_earth_degasation.io.candidates import (
 from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.io.raster_stack import RasterLayer, RasterStack, load_raster_stack
 from deep_earth_degasation.io.raster_stack import write_run_manifest as write_raster_run_manifest
-from deep_earth_degasation.io.vector import VectorLayer, load_vector_layer
+from deep_earth_degasation.io.vector import VectorDataError, VectorLayer, load_vector_layer
 from deep_earth_degasation.learning.dataset import write_learning_dataset
 from deep_earth_degasation.pipeline.manifest import PreparedStackManifest
 from deep_earth_degasation.reports.passport import write_candidate_passport
@@ -176,14 +176,20 @@ def _load_vectors(
                 )
             vectors[name] = None
             continue
-        vectors[name] = load_vector_layer(
-            spec.path,
-            name=name,
-            role=spec.role,
-            id_field=spec.id_field,
-            target_crs=manifest.crs,
-            allow_reprojection=allow_reprojection,
-        )
+        try:
+            vectors[name] = load_vector_layer(
+                spec.path,
+                name=name,
+                role=spec.role,
+                id_field=spec.id_field,
+                target_crs=manifest.crs,
+                allow_reprojection=allow_reprojection,
+            )
+        except VectorDataError as exc:
+            if not spec.required and "contains no features" in str(exc):
+                vectors[name] = None
+                continue
+            raise
     return vectors
 
 
@@ -347,7 +353,9 @@ def _false_positive_filter_config(config: MVPConfig) -> FalsePositiveFilterConfi
         flag_built_up=filters.flag_built_up
         if filters.flag_built_up is not None
         else bool(filters.flag_builtup if filters.flag_builtup is not None else True),
+        flag_excluded_zones=filters.flag_excluded_zones,
         flag_quarries=filters.flag_quarries,
+        flag_woody_patches=filters.flag_woody_patches,
         flag_field_edges=filters.flag_field_edges,
         flag_linear_objects=filters.flag_linear_objects,
         flag_cloud_shadows=filters.flag_cloud_shadows,
@@ -358,6 +366,7 @@ def _false_positive_filter_config(config: MVPConfig) -> FalsePositiveFilterConfi
         road_buffer_m=filters.road_buffer_m or 20.0,
         water_buffer_m=filters.water_buffer_m or 20.0,
         builtup_buffer_m=filters.builtup_buffer_m or 50.0,
+        woody_patch_buffer_m=filters.woody_patch_buffer_m or 20.0,
         field_edge_buffer_m=filters.field_edge_buffer_m or 20.0,
         max_elongation_without_penalty=filters.max_elongation_without_penalty or 4.0,
         penalties=_false_positive_penalties(config),
@@ -387,6 +396,7 @@ def _false_positive_context(vectors: dict[str, VectorLayer | None]) -> FalsePosi
         built_up=_vector_data(vectors, "built_up"),
         excluded_zones=_vector_data(vectors, "excluded_zones"),
         quarries=_vector_data(vectors, "quarries"),
+        woody_patches=_vector_data(vectors, "woody_patches"),
         cloud_shadows=_vector_data(vectors, "cloud_shadows"),
         harvest_patterns=_vector_data(vectors, "harvest_patterns"),
         irrigation=_vector_data(vectors, "irrigation"),

@@ -38,6 +38,16 @@ vectors:
     crs: EPSG:32637
     role: excluded_zones
     required: false
+  quarries:
+    path: data/context/quarries.geojson
+    crs: EPSG:32637
+    role: quarries
+    required: false
+  woody_patches:
+    path: data/context/woody_patches.geojson
+    crs: EPSG:32637
+    role: woody_patches
+    required: false
   known_sites:
     path: data/context/known_sites.geojson
     crs: EPSG:32637

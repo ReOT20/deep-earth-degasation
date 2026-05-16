@@ -35,6 +35,7 @@ def test_spatial_context_layers_add_false_positive_flags_and_penalties() -> None
         built_up=_layer([box(0, 0, 5, 5)]),
         excluded_zones=_layer([box(2, 2, 8, 8)]),
         quarries=_layer([box(1, 1, 3, 3)]),
+        woody_patches=_layer([box(90, 90, 95, 95)]),
     )
     config = FalsePositiveFilterConfig(
         flag_cloud_shadows=False,
@@ -54,6 +55,30 @@ def test_spatial_context_layers_add_false_positive_flags_and_penalties() -> None
     assert filtered["false_positive_penalty"].iloc[0] == pytest.approx(1.45)
 
 
+def test_woody_patch_context_adds_false_positive_flag_and_penalty() -> None:
+    objects = _objects([box(0, 0, 10, 10)])
+    context = FalsePositiveContext(woody_patches=_layer([box(15, 0, 25, 10)]))
+
+    filtered = apply_false_positive_filters(
+        objects,
+        context,
+        FalsePositiveFilterConfig(
+            flag_roads=False,
+            flag_water=False,
+            flag_built_up=False,
+            flag_excluded_zones=False,
+            flag_quarries=False,
+            flag_cloud_shadows=False,
+            flag_harvest_patterns=False,
+            flag_irrigation=False,
+            woody_patch_buffer_m=10.0,
+        ),
+    )
+
+    assert filtered["false_positive_flags"].iloc[0] == ["woody_patch_risk"]
+    assert filtered["false_positive_penalty"].iloc[0] == pytest.approx(0.25)
+
+
 def test_water_buffer_flags_near_objects_without_intersection() -> None:
     objects = _objects([box(0, 0, 10, 10)])
     context = FalsePositiveContext(water=_layer([box(15, 0, 25, 10)]))
@@ -66,6 +91,7 @@ def test_water_buffer_flags_near_objects_without_intersection() -> None:
             flag_built_up=False,
             flag_excluded_zones=False,
             flag_quarries=False,
+            flag_woody_patches=False,
             flag_cloud_shadows=False,
             flag_harvest_patterns=False,
             flag_irrigation=False,
@@ -93,6 +119,7 @@ def test_field_edge_and_linear_object_risks_use_existing_object_columns() -> Non
             flag_built_up=False,
             flag_excluded_zones=False,
             flag_quarries=False,
+            flag_woody_patches=False,
             flag_cloud_shadows=False,
             flag_harvest_patterns=False,
             flag_irrigation=False,
@@ -115,6 +142,7 @@ def test_missing_enabled_context_layers_add_missing_data_flags() -> None:
             flag_built_up=False,
             flag_excluded_zones=False,
             flag_quarries=False,
+            flag_woody_patches=False,
             flag_cloud_shadows=False,
             flag_harvest_patterns=False,
             flag_irrigation=False,
@@ -126,6 +154,26 @@ def test_missing_enabled_context_layers_add_missing_data_flags() -> None:
         "missing_context_roads",
         "missing_context_water",
     ]
+
+
+def test_disabled_context_layers_do_not_add_missing_data_flags() -> None:
+    filtered = apply_false_positive_filters(
+        _objects([box(0, 0, 10, 10)]),
+        FalsePositiveContext(),
+        FalsePositiveFilterConfig(
+            flag_roads=False,
+            flag_water=False,
+            flag_built_up=False,
+            flag_excluded_zones=False,
+            flag_quarries=False,
+            flag_woody_patches=False,
+            flag_cloud_shadows=False,
+            flag_harvest_patterns=False,
+            flag_irrigation=False,
+        ),
+    )
+
+    assert filtered["missing_data_flags"].iloc[0] == []
 
 
 def test_context_crs_mismatch_raises() -> None:
@@ -143,6 +191,7 @@ def test_context_crs_mismatch_raises() -> None:
                 flag_built_up=False,
                 flag_excluded_zones=False,
                 flag_quarries=False,
+                flag_woody_patches=False,
                 flag_cloud_shadows=False,
                 flag_harvest_patterns=False,
                 flag_irrigation=False,
@@ -187,6 +236,7 @@ def test_context_false_positive_flags_flow_to_dynamic_review_artifacts(tmp_path:
             flag_built_up=False,
             flag_excluded_zones=False,
             flag_quarries=False,
+            flag_woody_patches=False,
             flag_cloud_shadows=False,
             flag_harvest_patterns=False,
             flag_irrigation=False,

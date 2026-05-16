@@ -140,6 +140,7 @@ class FalsePositiveFiltersConfig(StrictModel):
     flag_water: bool = True
     flag_builtup: bool | None = None
     flag_built_up: bool | None = None
+    flag_excluded_zones: bool = True
     flag_field_edges: bool = True
     flag_linear_objects: bool = True
     flag_cloud_shadows: bool = True
@@ -149,9 +150,11 @@ class FalsePositiveFiltersConfig(StrictModel):
     flag_wetlands: bool | None = None
     flag_irrigation: bool | None = None
     flag_quarries: bool = True
+    flag_woody_patches: bool = True
     road_buffer_m: float | None = None
     water_buffer_m: float | None = None
     builtup_buffer_m: float | None = None
+    woody_patch_buffer_m: float | None = None
     field_edge_buffer_m: float | None = None
     max_elongation_without_penalty: float | None = None
     missing_context_policy: str | None = None
@@ -189,6 +192,7 @@ class PenaltyConfig(StrictModel):
     water: float | None = None
     built_up: float | None = None
     quarry: float | None = None
+    woody_patch: float | None = None
     linear_object: float | None = None
     cloud_shadow: float | None = None
     harvest_pattern: float | None = None

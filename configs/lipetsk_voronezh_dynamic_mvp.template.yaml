@@ -42,6 +42,9 @@ vectors:
   excluded_zones:
     path: data/context/excluded_zones.geojson
     required: false
+  woody_patches:
+    path: data/context/woody_patches.geojson
+    required: false
   geology:
     path: data/context/geology.geojson
     required: false
@@ -143,6 +146,9 @@ false_positive_filters:
   water_buffer_m: 20
   flag_builtup: true
   builtup_buffer_m: 50
+  flag_excluded_zones: false
+  flag_woody_patches: true
+  woody_patch_buffer_m: 20
   flag_field_edges: true
   field_edge_buffer_m: 20
   flag_linear_objects: true
@@ -175,6 +181,7 @@ scoring:
     water: 0.30
     built_up: 0.35
     quarry: 0.40
+    woody_patch: 0.25
     linear_object: 0.25
     cloud_shadow: 0.20
     harvest_pattern: 0.20

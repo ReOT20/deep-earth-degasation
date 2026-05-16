@@ -8,6 +8,7 @@ from typing import Any
 
 import geopandas as gpd
 import numpy as np
+import pytest
 import rasterio
 import yaml
 from rasterio.transform import from_origin
@@ -15,6 +16,10 @@ from shapely.geometry import LineString, box
 from typer.testing import CliRunner
 
 from deep_earth_degasation.cli import app
+from deep_earth_degasation.config import load_config
+from deep_earth_degasation.io.vector import VectorDataError
+from deep_earth_degasation.pipeline.manifest import load_prepared_stack_manifest
+from deep_earth_degasation.pipeline.run_mvp import _load_vectors
 
 CRS = "EPSG:32637"
 TRANSFORM = from_origin(0, 100, 10, 10)
@@ -196,6 +201,44 @@ def test_run_mvp_penalty_toggle_keeps_flags_without_score_penalty(tmp_path: Path
     assert float(true_row["false_positive_penalty"]) == 0.6
     assert float(false_row["false_positive_penalty"]) == 0.0
     assert float(false_row["object_score"]) > float(true_row["object_score"])
+
+
+def test_optional_empty_vector_files_are_treated_as_absent(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    empty_context = tmp_path / "empty_quarries.geojson"
+    _write_empty_geojson(empty_context)
+    _update_manifest(
+        manifest_path,
+        lambda manifest: manifest["vectors"].update(
+            {
+                "quarries": {
+                    "path": str(empty_context),
+                    "crs": CRS,
+                    "role": "quarries",
+                    "required": False,
+                }
+            }
+        ),
+    )
+
+    vectors = _load_vectors(load_prepared_stack_manifest(manifest_path), load_config(config_path))
+
+    assert vectors["quarries"] is None
+
+
+def test_required_empty_vector_files_still_fail(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    empty_fields = tmp_path / "empty_fields.geojson"
+    _write_empty_geojson(empty_fields)
+    _update_manifest(
+        manifest_path,
+        lambda manifest: manifest["vectors"]["fields"].update({"path": str(empty_fields)}),
+    )
+
+    with pytest.raises(VectorDataError, match="fields contains no features"):
+        _load_vectors(load_prepared_stack_manifest(manifest_path), load_config(config_path))
 
 
 def test_run_mvp_output_toggles_control_artifacts(tmp_path: Path) -> None:
@@ -519,6 +562,25 @@ def _update_config(path: Path, update: Callable[[dict[str, Any]], object]) -> No
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     update(config)
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+
+def _update_manifest(path: Path, update: Callable[[dict[str, Any]], object]) -> None:
+    manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
+    update(manifest)
+    path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+
+def _write_empty_geojson(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {"type": "name", "properties": {"name": CRS}},
+                "features": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:

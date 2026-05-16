@@ -17,6 +17,7 @@ class FalsePositiveContext:
     built_up: gpd.GeoDataFrame | None = None
     excluded_zones: gpd.GeoDataFrame | None = None
     quarries: gpd.GeoDataFrame | None = None
+    woody_patches: gpd.GeoDataFrame | None = None
     cloud_shadows: gpd.GeoDataFrame | None = None
     harvest_patterns: gpd.GeoDataFrame | None = None
     irrigation: gpd.GeoDataFrame | None = None
@@ -29,6 +30,7 @@ class FalsePositiveFilterConfig:
     flag_built_up: bool = True
     flag_excluded_zones: bool = True
     flag_quarries: bool = True
+    flag_woody_patches: bool = True
     flag_cloud_shadows: bool = True
     flag_harvest_patterns: bool = True
     flag_irrigation: bool = True
@@ -37,6 +39,7 @@ class FalsePositiveFilterConfig:
     road_buffer_m: float = 20.0
     water_buffer_m: float = 20.0
     builtup_buffer_m: float = 50.0
+    woody_patch_buffer_m: float = 20.0
     field_edge_buffer_m: float = 20.0
     max_elongation_without_penalty: float = 4.0
     penalties: dict[str, float] = field(
@@ -47,6 +50,7 @@ class FalsePositiveFilterConfig:
             "built_up": 0.35,
             "excluded_zone": 0.40,
             "quarry": 0.40,
+            "woody_patch": 0.25,
             "linear_object": 0.25,
             "cloud_shadow": 0.20,
             "harvest_pattern": 0.20,
@@ -132,6 +136,13 @@ def _spatial_risks(config: FalsePositiveFilterConfig) -> tuple[_SpatialRisk, ...
             0.0,
         ),
         _SpatialRisk("quarries", "quarry_risk", "quarry", config.flag_quarries, 0.0),
+        _SpatialRisk(
+            "woody_patches",
+            "woody_patch_risk",
+            "woody_patch",
+            config.flag_woody_patches,
+            config.woody_patch_buffer_m,
+        ),
         _SpatialRisk(
             "cloud_shadows",
             "cloud_shadow_risk",

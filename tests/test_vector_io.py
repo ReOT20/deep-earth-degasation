@@ -33,7 +33,10 @@ def test_load_vector_layer_preserves_role_crs_and_source_ids(tmp_path: Path) -> 
     assert layer.data["stable_id"].to_list() == ["aoi-1"]
 
 
-@pytest.mark.parametrize("role", ["aoi", "fields", "excluded_zones", "roads", "water", "built_up"])
+@pytest.mark.parametrize(
+    "role",
+    ["aoi", "fields", "excluded_zones", "roads", "water", "built_up", "woody_patches"],
+)
 def test_load_vector_layer_supports_common_context_roles(tmp_path: Path, role: str) -> None:
     path = _write_layer(
         tmp_path / f"{role}.gpkg",

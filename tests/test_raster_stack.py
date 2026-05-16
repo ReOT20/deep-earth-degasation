@@ -34,6 +34,8 @@ def test_prepared_stack_manifest_template_loads() -> None:
     assert manifest.run.id == "lipetsk_voronezh_dynamic_pilot_template"
     assert manifest.crs == METRIC_CRS
     assert manifest.raster_layers[0].feature_name == "NDVI"
+    assert manifest.vectors["quarries"].role == "quarries"
+    assert manifest.vectors["woody_patches"].role == "woody_patches"
     assert (
         manifest.raster_layers[0].path
         == (Path.cwd() / "data/prepared/sentinel2/2024-05-15_NDVI.tif").resolve()
