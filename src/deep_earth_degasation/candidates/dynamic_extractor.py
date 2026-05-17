@@ -9,15 +9,17 @@ import geopandas as gpd
 import numpy as np
 from affine import Affine
 from rasterio.features import shapes
+from scipy.ndimage import binary_dilation
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 from skimage.measure import label, regionprops
 
+from deep_earth_degasation.anomaly.composite import CompositeAnomalyMap
 from deep_earth_degasation.anomaly.field_normalization import FieldAnomalyLayer
 from deep_earth_degasation.candidates.object_features import compute_object_zonal_stats
 from deep_earth_degasation.context.fields import assign_field_context
 from deep_earth_degasation.io.raster_stack import FloatArray
-from deep_earth_degasation.morphology.shape import compute_shape_metrics
+from deep_earth_degasation.morphology.shape import compute_shape_metrics, ringness_score
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,9 @@ class DynamicExtractionConfig:
     min_diameter_m: float = 40.0
     max_diameter_m: float = 1_000.0
     max_elongation: float = 4.0
+    broad_patch_min_area_m2: float | None = 50_000.0
+    broad_patch_max_circularity: float = 1.0
+    broad_patch_max_ringness: float = 0.0
     merge_distance_m: float = 30.0
     merge_across_dates: bool = True
     connectivity: int = 2
@@ -46,13 +51,74 @@ def extract_dynamic_objects(
     field_id_column: str = "field_id",
 ) -> gpd.GeoDataFrame:
     """Extract review candidate objects from field-normalized anomaly maps."""
+    return _extract_dynamic_objects_from_layers(
+        anomaly_layers,
+        anomaly_layers,
+        field_ids,
+        transform=transform,
+        crs=crs,
+        config=config,
+        fields=fields,
+        field_id_column=field_id_column,
+        merge_detections=True,
+    )
+
+
+def extract_dynamic_objects_from_composite(
+    composite: CompositeAnomalyMap,
+    anomaly_layers: tuple[FieldAnomalyLayer, ...],
+    field_ids: np.ndarray,
+    *,
+    transform: Affine,
+    crs: str,
+    config: DynamicExtractionConfig | None = None,
+    fields: gpd.GeoDataFrame | None = None,
+    field_id_column: str = "field_id",
+) -> gpd.GeoDataFrame:
+    """Extract review objects from the composite map and explain them with source layers."""
+    composite_layer = FieldAnomalyLayer(
+        name="composite_anomaly",
+        component="composite",
+        data=composite.data,
+        date=None,
+        source_feature_names=composite.source_feature_names,
+        source_layer_ids=composite.source_layer_ids,
+        evidence_direction="higher_values_indicate_stronger_local_anomaly_support",
+        missing_data_flags=composite.missing_data_flags,
+    )
+    return _extract_dynamic_objects_from_layers(
+        (composite_layer,),
+        anomaly_layers,
+        field_ids,
+        transform=transform,
+        crs=crs,
+        config=config,
+        fields=fields,
+        field_id_column=field_id_column,
+        merge_detections=False,
+    )
+
+
+def _extract_dynamic_objects_from_layers(
+    detection_layers: tuple[FieldAnomalyLayer, ...],
+    stat_layers: tuple[FieldAnomalyLayer, ...],
+    field_ids: np.ndarray,
+    *,
+    transform: Affine,
+    crs: str,
+    config: DynamicExtractionConfig | None,
+    fields: gpd.GeoDataFrame | None,
+    field_id_column: str,
+    merge_detections: bool,
+) -> gpd.GeoDataFrame:
     extraction_config = config or DynamicExtractionConfig()
-    if not anomaly_layers:
+    if not detection_layers:
         return _empty_objects(crs)
-    _require_common_shapes(anomaly_layers, field_ids)
+    _require_common_shapes(detection_layers, field_ids)
+    _require_common_shapes(stat_layers, field_ids)
 
     detections: list[dict[str, Any]] = []
-    for layer in anomaly_layers:
+    for layer in detection_layers:
         detection_labels = _field_local_labels(layer.data, field_ids, extraction_config)
         for region in regionprops(detection_labels):
             component_mask = detection_labels == region.label
@@ -64,8 +130,9 @@ def extract_dynamic_objects(
                     object_id=f"dynamic-detection-{len(detections) + 1:06d}",
                     geometry=geometry,
                     field_id=_majority_field_id(field_ids[component_mask]),
-                    layers=(layer,),
+                    layers=(layer,) if merge_detections else stat_layers,
                     mask=component_mask,
+                    detection_data=layer.data,
                     config=extraction_config,
                     crs=crs,
                 )
@@ -77,7 +144,7 @@ def extract_dynamic_objects(
     detections_gdf = gpd.GeoDataFrame(detections, geometry="geometry", crs=crs)
     merged_gdf = (
         _merge_repeated_detections(detections_gdf, extraction_config)
-        if extraction_config.merge_across_dates
+        if merge_detections and extraction_config.merge_across_dates
         else detections_gdf
     )
     if fields is not None and not merged_gdf.empty:
@@ -129,7 +196,7 @@ def _field_local_labels(
         support_threshold = _support_threshold(values, config)
         seed_mask = positive_support_mask & (data >= seed_threshold)
         support_mask = positive_support_mask & (data >= support_threshold)
-        field_labels = label(support_mask, connectivity=config.connectivity)
+        field_labels = np.asarray(label(support_mask, connectivity=config.connectivity))
         for component_label in range(1, int(field_labels.max()) + 1):
             component_mask = field_labels == component_label
             if not np.any(component_mask & seed_mask):
@@ -170,6 +237,7 @@ def _object_row(
     field_id: str,
     layers: tuple[FieldAnomalyLayer, ...],
     mask: np.ndarray,
+    detection_data: FloatArray,
     config: DynamicExtractionConfig,
     crs: str,
 ) -> dict[str, Any]:
@@ -177,10 +245,13 @@ def _object_row(
     stats = compute_object_zonal_stats(layers, mask)
     support_pixel_count = int(np.count_nonzero(mask))
     pixel_area_m2 = metrics.area / support_pixel_count if support_pixel_count else 0.0
+    annulus_contrast, ring_score = _ring_evidence(detection_data, mask)
     flags = _object_flags(
         metrics.area,
         metrics.equivalent_diameter,
+        metrics.circularity,
         metrics.elongation,
+        ring_score,
         support_pixel_count,
         config,
     )
@@ -193,6 +264,8 @@ def _object_row(
         "equivalent_diameter_m": metrics.equivalent_diameter,
         "circularity": metrics.circularity,
         "elongation": metrics.elongation,
+        "annulus_contrast": annulus_contrast,
+        "ringness_score": ring_score,
         "support_pixel_count": support_pixel_count,
         "pixel_area_m2": pixel_area_m2,
         "mean_anomaly": stats.mean_anomaly,
@@ -202,7 +275,7 @@ def _object_row(
         "source_feature_names": stats.source_feature_names,
         "source_layer_ids": stats.source_layer_ids,
         "anomalous_dates": stats.anomalous_dates,
-        "source_detection_count": 1,
+        "source_detection_count": stats.supporting_observation_count,
         "repeated_seasons": _season_count(stats.anomalous_dates),
         "dynamic_object_flags": flags,
         "passes_dynamic_filters": not flags,
@@ -250,10 +323,14 @@ def _merged_row(
     dates = sorted({date for row in group for date in row["anomalous_dates"]})
     pixel_area_m2 = float(group[0].get("pixel_area_m2") or 0.0)
     support_pixel_count = round(metrics.area / pixel_area_m2) if pixel_area_m2 > 0 else 0
+    ring_score = float(np.nanmax([row.get("ringness_score", 0.0) for row in group]))
+    annulus_contrast = float(np.nanmax([row.get("annulus_contrast", 0.0) for row in group]))
     flags = _object_flags(
         metrics.area,
         metrics.equivalent_diameter,
+        metrics.circularity,
         metrics.elongation,
+        ring_score,
         support_pixel_count,
         config,
     )
@@ -268,6 +345,8 @@ def _merged_row(
         "equivalent_diameter_m": metrics.equivalent_diameter,
         "circularity": metrics.circularity,
         "elongation": metrics.elongation,
+        "annulus_contrast": annulus_contrast,
+        "ringness_score": ring_score,
         "support_pixel_count": support_pixel_count,
         "pixel_area_m2": pixel_area_m2,
         "mean_anomaly": float(np.nanmean([row["mean_anomaly"] for row in group])),
@@ -281,7 +360,7 @@ def _merged_row(
             sorted({layer_id for row in group for layer_id in row["source_layer_ids"]})
         ),
         "anomalous_dates": tuple(dates),
-        "source_detection_count": len(group),
+        "source_detection_count": sum(int(row.get("source_detection_count") or 0) for row in group),
         "repeated_seasons": _season_count(tuple(dates)),
         "dynamic_object_flags": flags,
         "passes_dynamic_filters": not flags,
@@ -333,7 +412,9 @@ def _merge_feature_stats(
 def _object_flags(
     area_m2: float,
     diameter_m: float,
+    circularity: float,
     elongation: float,
+    ringness: float,
     support_pixel_count: int,
     config: DynamicExtractionConfig,
 ) -> list[str]:
@@ -348,7 +429,44 @@ def _object_flags(
         flags.append("too_large")
     if elongation > config.max_elongation:
         flags.append("elongated")
+    if (
+        config.broad_patch_min_area_m2 is not None
+        and area_m2 >= config.broad_patch_min_area_m2
+        and circularity <= config.broad_patch_max_circularity
+        and ringness <= config.broad_patch_max_ringness
+    ):
+        flags.append("broad_patch")
     return flags
+
+
+def _ring_evidence(data: FloatArray, mask: np.ndarray) -> tuple[float, float]:
+    annulus = _nanmean(data[mask])
+    center_mask = _center_mask(mask)
+    background_mask = binary_dilation(mask, iterations=3) & ~mask
+    center = _nanmean(data[center_mask])
+    background = _nanmean(data[background_mask])
+    contrast = annulus - background
+    return float(contrast), ringness_score(annulus, center, background)
+
+
+def _center_mask(mask: np.ndarray) -> np.ndarray:
+    rows, cols = np.nonzero(mask)
+    if rows.size == 0:
+        return np.zeros(mask.shape, dtype=bool)
+    row_center = float(np.mean(rows))
+    col_center = float(np.mean(cols))
+    radius = max(float(np.sqrt(rows.size / np.pi)) * 0.45, 1.0)
+    grid_rows, grid_cols = np.ogrid[: mask.shape[0], : mask.shape[1]]
+    center_disk = (grid_rows - row_center) ** 2 + (grid_cols - col_center) ** 2 <= radius**2
+    center = center_disk & ~mask
+    return center if np.any(center) else center_disk & mask
+
+
+def _nanmean(values: np.ndarray) -> float:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0
+    return float(np.nanmean(finite))
 
 
 def _majority_field_id(values: np.ndarray) -> str:

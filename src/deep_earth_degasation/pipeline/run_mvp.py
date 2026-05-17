@@ -18,7 +18,7 @@ from deep_earth_degasation.anomaly.field_normalization import (
 )
 from deep_earth_degasation.candidates.dynamic_extractor import (
     DynamicExtractionConfig,
-    extract_dynamic_objects,
+    extract_dynamic_objects_from_composite,
 )
 from deep_earth_degasation.config import MVPConfig, resolved_config_dict
 from deep_earth_degasation.context.false_positive import (
@@ -95,7 +95,8 @@ def run_dynamic_mvp(
         reference_layer=reference_layer,
     )
     composite = composite_anomaly_map(anomaly_layers, config.anomaly_components)
-    objects = extract_dynamic_objects(
+    objects = extract_dynamic_objects_from_composite(
+        composite,
         anomaly_layers,
         field_ids,
         transform=reference_layer.transform,
@@ -413,9 +414,13 @@ def _append_missing_flags(objects: gpd.GeoDataFrame, flags: tuple[str, ...]) -> 
         return objects
     output = objects.copy()
     sorted_flags = tuple(sorted(set(flags)))
+    existing_flags = (
+        output["missing_data_flags"]
+        if "missing_data_flags" in output
+        else [() for _ in range(len(output))]
+    )
     output["missing_data_flags"] = [
-        tuple(sorted(set(_list_value(value)) | set(sorted_flags)))
-        for value in output.get("missing_data_flags", [() for _ in range(len(output))])
+        tuple(sorted(set(_list_value(value)) | set(sorted_flags))) for value in existing_flags
     ]
     return output
 

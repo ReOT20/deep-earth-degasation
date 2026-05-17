@@ -29,6 +29,7 @@ def test_load_vector_layer_preserves_role_crs_and_source_ids(tmp_path: Path) -> 
 
     assert layer.name == "pilot_aoi"
     assert layer.role == "aoi"
+    assert layer.data.crs is not None
     assert layer.data.crs.to_epsg() == 32637
     assert layer.data["stable_id"].to_list() == ["aoi-1"]
 
@@ -82,6 +83,7 @@ def test_geographic_crs_can_be_reprojected_when_enabled(tmp_path: Path) -> None:
         allow_reprojection=True,
     )
 
+    assert layer.data.crs is not None
     assert layer.data.crs.to_epsg() == 32637
     assert layer.data.total_bounds[0] > 300_000
 
@@ -103,6 +105,7 @@ def test_metric_source_is_reprojected_to_explicit_target_crs(tmp_path: Path) -> 
         allow_reprojection=True,
     )
 
+    assert layer.data.crs is not None
     assert layer.data.crs.to_epsg() == 32637
     assert layer.data.total_bounds[0] != pytest.approx(37.0)
 

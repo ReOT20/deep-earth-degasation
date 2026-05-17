@@ -287,7 +287,7 @@ def test_run_mvp_output_toggles_control_artifacts(tmp_path: Path) -> None:
 
 def test_candidates_top_n_limits_review_exports(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
-    manifest_path = _write_prepared_data(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path, extra_blobs=True)
     _update_config(
         config_path,
         lambda config: (
@@ -334,11 +334,13 @@ def test_candidates_top_n_limits_review_exports(tmp_path: Path) -> None:
     assert len(list((output_dir / "quicklooks").glob("*.png"))) == 2
 
 
-def test_merge_across_dates_toggle_changes_candidate_count(tmp_path: Path) -> None:
+def test_merge_across_dates_toggle_does_not_overmerge_composite_components(
+    tmp_path: Path,
+) -> None:
     merged_config_path = _write_config(tmp_path / "merged")
-    merged_manifest_path = _write_prepared_data(tmp_path / "merged")
+    merged_manifest_path = _write_prepared_data(tmp_path / "merged", extra_blobs=True)
     unmerged_config_path = _write_config(tmp_path / "unmerged")
-    unmerged_manifest_path = _write_prepared_data(tmp_path / "unmerged")
+    unmerged_manifest_path = _write_prepared_data(tmp_path / "unmerged", extra_blobs=True)
     _update_config(
         unmerged_config_path,
         lambda config: config["dynamic_detector"].update({"merge_across_dates": False}),
@@ -371,9 +373,10 @@ def test_merge_across_dates_toggle_changes_candidate_count(tmp_path: Path) -> No
 
     assert merged_result.exit_code == 0, merged_result.output
     assert unmerged_result.exit_code == 0, unmerged_result.output
-    assert len(_read_csv_rows(tmp_path / "unmerged_outputs" / "candidate_scores.csv")) > len(
-        _read_csv_rows(tmp_path / "merged_outputs" / "candidate_scores.csv")
-    )
+    merged_count = len(_read_csv_rows(tmp_path / "merged_outputs" / "candidate_scores.csv"))
+    unmerged_count = len(_read_csv_rows(tmp_path / "unmerged_outputs" / "candidate_scores.csv"))
+    assert merged_count == unmerged_count
+    assert merged_count > 1
 
 
 def test_time_windows_exclude_out_of_window_components(tmp_path: Path) -> None:
@@ -402,6 +405,35 @@ def test_time_windows_exclude_out_of_window_components(tmp_path: Path) -> None:
     row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
     assert row["vegetation_stress"] == ""
     assert "skipped_out_of_window_NDVI_2024-05-15" in row["missing_data_flags"]
+
+
+def test_composite_source_observations_satisfy_minimum_observation_flag(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: config["dynamic_detector"].update({"min_valid_observations_per_season": 3}),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
+    assert "below_min_valid_observations_per_season" not in row["missing_data_flags"]
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -503,7 +535,7 @@ def _write_config(tmp_path: Path) -> Path:
     return path
 
 
-def _write_prepared_data(tmp_path: Path) -> Path:
+def _write_prepared_data(tmp_path: Path, *, extra_blobs: bool = False) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     aoi_path = tmp_path / "aoi.geojson"
     fields_path = tmp_path / "fields.geojson"
@@ -518,6 +550,13 @@ def _write_prepared_data(tmp_path: Path) -> Path:
     ndmi[4:7, 4:7] = 0.05
     ndvi[4:7, 4:7] = 0.10
     bsi[4:7, 4:7] = 1.0
+    if extra_blobs:
+        ndmi[1:3, 1:3] = 0.05
+        ndvi[1:3, 1:3] = 0.10
+        bsi[1:3, 1:3] = 1.0
+        ndmi[8:10, 7:9] = 0.05
+        ndvi[8:10, 7:9] = 0.10
+        bsi[8:10, 7:9] = 1.0
     _write_raster(tmp_path / "ndmi.tif", ndmi)
     _write_raster(tmp_path / "ndvi.tif", ndvi)
     _write_raster(tmp_path / "bsi.tif", bsi)

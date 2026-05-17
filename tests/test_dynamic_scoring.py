@@ -244,6 +244,33 @@ def test_false_positive_penalty_downgrades_strong_dynamic_geometry() -> None:
     assert penalized_row["priority_class"] == "C"
 
 
+def test_broad_patch_flag_caps_priority_below_high_review_classes() -> None:
+    scored = score_candidate_objects(
+        _candidates(
+            [
+                {
+                    **_row(
+                        candidate_id="broad-patch",
+                        evidence_class="dynamic_only",
+                        static_score=None,
+                        per_feature_max={"NDMI": 3.0, "NDVI": 3.0, "BSI": 3.0},
+                        circularity=0.2,
+                        elongation=2.0,
+                    ),
+                    "dynamic_object_flags": ("broad_patch",),
+                }
+            ]
+        ),
+        ScoringConfig(
+            cropland=ScoreWeights(),
+            priority_thresholds=PriorityThresholds(A=0.75, B=0.55, C=0.35, D=0.0),
+        ),
+    )
+
+    assert scored["object_score"].iloc[0] < 0.55
+    assert scored["priority_class"].iloc[0] == "C"
+
+
 @pytest.mark.parametrize(
     ("branch", "expected_flag"),
     [

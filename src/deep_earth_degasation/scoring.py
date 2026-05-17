@@ -169,6 +169,7 @@ def score_candidate_objects(
             morphology_score=morphology_score,
             penalty=penalty,
         )
+        object_score = _apply_dynamic_flag_caps(object_score, row, scoring_config)
 
         static_scores.append(static_score)
         object_scores.append(object_score)
@@ -215,6 +216,20 @@ def _object_score(
     else:
         base_score = 0.50 * dynamic_score + 0.50 * static_score
     return _clamp01(base_score - penalty)
+
+
+def _apply_dynamic_flag_caps(
+    object_score: float, row: Any, scoring_config: ScoringConfig | None
+) -> float:
+    flags = set(_tuple_value(_row_value(row, "dynamic_object_flags")))
+    if "broad_patch" not in flags:
+        return object_score
+    thresholds = (
+        _DEFAULT_PRIORITY_THRESHOLDS
+        if scoring_config is None or scoring_config.priority_thresholds is None
+        else scoring_config.priority_thresholds
+    )
+    return min(object_score, max(0.0, thresholds.B - 1.0e-6))
 
 
 def _dynamic_score(

@@ -5,11 +5,13 @@ import numpy as np
 from affine import Affine
 from shapely.geometry import box
 
+from deep_earth_degasation.anomaly.composite import CompositeAnomalyMap
 from deep_earth_degasation.anomaly.field_normalization import FieldAnomalyLayer
 from deep_earth_degasation.candidates.dynamic_extractor import (
     DynamicExtractionConfig,
     assign_stable_candidate_ids,
     extract_dynamic_objects,
+    extract_dynamic_objects_from_composite,
 )
 
 CRS = "EPSG:32637"
@@ -91,6 +93,181 @@ def test_min_support_pixels_filters_single_pixel_detections() -> None:
     )
 
     assert objects.empty
+
+
+def test_composite_blob_becomes_one_candidate_with_per_feature_stats() -> None:
+    moisture = _blank()
+    vegetation = _blank()
+    _draw_disk(moisture, center=(5, 5), radius=2, value=10.0)
+    _draw_disk(vegetation, center=(5, 5), radius=2, value=8.0)
+    composite = _composite((moisture + vegetation) / 2.0)
+    fields = np.ones(moisture.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        composite,
+        (
+            _layer("NDMI", moisture, component="moisture", layer_id="ndmi"),
+            _layer("NDVI", vegetation, component="vegetation", layer_id="ndvi"),
+        ),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=100.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    row = objects.iloc[0]
+    assert row["source_feature_names"] == ("NDMI", "NDVI")
+    assert row["source_layer_ids"] == ("ndmi", "ndvi")
+    assert row["per_feature_max"]["NDMI"] == 10.0
+    assert row["per_feature_max"]["NDVI"] == 8.0
+
+
+def test_composite_stats_aggregate_repeated_feature_dates_without_overwrite() -> None:
+    early_ndmi = _blank()
+    later_ndmi = _blank()
+    vegetation = _blank()
+    _draw_disk(early_ndmi, center=(5, 5), radius=2, value=10.0)
+    _draw_disk(vegetation, center=(5, 5), radius=2, value=8.0)
+    composite = _composite((early_ndmi + vegetation) / 2.0)
+    fields = np.ones(early_ndmi.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        composite,
+        (
+            _layer(
+                "NDMI", early_ndmi, component="moisture", date="2024-05-15", layer_id="ndmi_2024"
+            ),
+            _layer(
+                "NDMI", later_ndmi, component="moisture", date="2025-05-15", layer_id="ndmi_2025"
+            ),
+            _layer(
+                "NDVI", vegetation, component="vegetation", date="2024-05-15", layer_id="ndvi_2024"
+            ),
+        ),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=100.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    row = objects.iloc[0]
+    assert row["per_feature_max"]["NDMI"] == 10.0
+    assert row["per_feature_max"]["NDVI"] == 8.0
+    assert row["anomalous_dates"] == ("2024-05-15",)
+    assert row["source_detection_count"] == 2
+    assert row["repeated_seasons"] == 1
+
+
+def test_single_feature_noise_does_not_flood_composite_inventory() -> None:
+    moisture = _blank(width=16)
+    vegetation = _blank(width=16)
+    moisture[5, 3] = 12.0
+    vegetation[5, 12] = 12.0
+    composite_data = _blank(width=16)
+    _draw_disk(composite_data, center=(5, 8), radius=1, value=8.0)
+    fields = np.ones(moisture.shape, dtype=int)
+
+    per_feature_objects = extract_dynamic_objects(
+        (
+            _layer("NDMI", moisture, component="moisture", layer_id="ndmi"),
+            _layer("NDVI", vegetation, component="vegetation", layer_id="ndvi"),
+        ),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=50.0, min_diameter_m=5.0),
+    )
+    composite_objects = extract_dynamic_objects_from_composite(
+        _composite(composite_data),
+        (
+            _layer("NDMI", moisture, component="moisture", layer_id="ndmi"),
+            _layer("NDVI", vegetation, component="vegetation", layer_id="ndvi"),
+        ),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=50.0, min_diameter_m=5.0),
+    )
+
+    assert len(per_feature_objects) == 2
+    assert len(composite_objects) == 1
+    assert composite_objects["source_feature_names"].iloc[0] == ("NDMI", "NDVI")
+
+
+def test_composite_nearby_blobs_remain_separate_without_repeated_detection_merge() -> None:
+    data = _blank(width=14)
+    _draw_disk(data, center=(5, 4), radius=1, value=10.0)
+    _draw_disk(data, center=(5, 8), radius=1, value=10.0)
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=DynamicExtractionConfig(
+            anomaly_percentile=90.0,
+            min_area_m2=50.0,
+            min_diameter_m=5.0,
+            max_area_m2=50_000.0,
+            max_diameter_m=300.0,
+            merge_distance_m=100.0,
+            merge_across_dates=True,
+        ),
+    )
+
+    assert len(objects) == 2
+
+
+def test_partial_ring_has_annulus_evidence() -> None:
+    data = _blank(height=15, width=15)
+    rows, cols = np.ogrid[:15, :15]
+    distance = np.sqrt((rows - 7) ** 2 + (cols - 7) ** 2)
+    data[(distance >= 3) & (distance <= 4)] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=100.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    assert objects["annulus_contrast"].iloc[0] > 0
+    assert objects["ringness_score"].iloc[0] > 0
+
+
+def test_broad_field_patch_is_flagged() -> None:
+    data = _blank(height=20, width=20)
+    data[5:15, 2:18] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("BSI", data, component="soil_brightness"),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=DynamicExtractionConfig(
+            anomaly_percentile=90.0,
+            min_area_m2=100.0,
+            max_area_m2=50_000.0,
+            min_diameter_m=5.0,
+            max_diameter_m=300.0,
+            max_elongation=4.0,
+            broad_patch_min_area_m2=5_000.0,
+            merge_distance_m=20.0,
+        ),
+    )
+
+    assert len(objects) == 1
+    assert "broad_patch" in objects["dynamic_object_flags"].iloc[0]
 
 
 def test_components_do_not_merge_across_field_boundaries() -> None:
@@ -365,6 +542,16 @@ def _layer(
         source_feature_names=(feature_name,),
         source_layer_ids=(layer_id or f"{feature_name}_layer",),
         evidence_direction="higher_values_indicate_stronger_local_anomaly_support",
+    )
+
+
+def _composite(data: np.ndarray) -> CompositeAnomalyMap:
+    return CompositeAnomalyMap(
+        data=data,
+        component_maps={"composite": data},
+        component_weights={"composite": 1.0},
+        source_feature_names=("NDMI", "NDVI"),
+        source_layer_ids=("ndmi", "ndvi"),
     )
 
 

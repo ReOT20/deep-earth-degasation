@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,7 +27,7 @@ def fuse_static_dynamic_candidates(
     """Fuse static morphology candidates and dynamic anomaly objects for review."""
     fusion_config = config or CandidateFusionConfig()
     rows: list[dict[str, Any]] = []
-    used_dynamic_indices: set[int] = set()
+    used_dynamic_indices: set[Hashable] = set()
 
     for static_candidate in sorted(static_candidates, key=lambda candidate: candidate.candidate_id):
         match = _best_dynamic_match(
@@ -44,7 +45,7 @@ def fuse_static_dynamic_candidates(
         rows.append(_static_dynamic_row(static_candidate, dynamic_row))
 
     for dynamic_index, dynamic_row in dynamic_objects.iterrows():
-        if int(dynamic_index) not in used_dynamic_indices:
+        if dynamic_index not in used_dynamic_indices:
             rows.append(_dynamic_only_row(dynamic_row))
 
     if not rows:
@@ -57,23 +58,22 @@ def _best_dynamic_match(
     static_geometry: BaseGeometry,
     dynamic_objects: gpd.GeoDataFrame,
     *,
-    used_dynamic_indices: set[int],
+    used_dynamic_indices: set[Hashable],
     config: CandidateFusionConfig,
-) -> tuple[int, Any] | None:
-    matches: list[tuple[float, float, int, Any]] = []
+) -> tuple[Hashable, Any] | None:
+    matches: list[tuple[float, float, str, Hashable, Any]] = []
     for dynamic_index, dynamic_row in dynamic_objects.iterrows():
-        index = int(dynamic_index)
-        if index in used_dynamic_indices:
+        if dynamic_index in used_dynamic_indices:
             continue
         dynamic_geometry = dynamic_row.geometry
         iou = _intersection_over_union(static_geometry, dynamic_geometry)
         centroid_distance = float(static_geometry.centroid.distance(dynamic_geometry.centroid))
         if iou >= config.iou_min or centroid_distance <= config.centroid_distance_max_m:
-            matches.append((iou, centroid_distance, index, dynamic_row))
+            matches.append((iou, centroid_distance, str(dynamic_index), dynamic_index, dynamic_row))
 
     if not matches:
         return None
-    _, _, index, row = sorted(matches, key=lambda item: (-item[0], item[1], item[2]))[0]
+    _, _, _, index, row = sorted(matches, key=lambda item: (-item[0], item[1], item[2]))[0]
     return index, row
 
 
