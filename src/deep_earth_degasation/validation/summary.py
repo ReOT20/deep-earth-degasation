@@ -58,6 +58,8 @@ def build_validation_summary(
         "candidate_count": len(ranked_rows),
         "top_n": top_n,
         "known_site_recall_at_n": recall_at_n,
+        "known_site_label_counts": _known_site_label_counts(known_sites),
+        "known_site_confidence_counts": _known_site_confidence_counts(known_sites),
         "expert_precision_top_n": expert_precision,
         "false_positive_counts": false_positive_counts,
         "multi_sensor_agreement": _multi_sensor_agreement(ranked_rows),
@@ -106,8 +108,13 @@ def _known_site_recall_at_n(
     if candidates is None or candidates.empty:
         return {f"top_{n}": 0.0 for n in values}
 
+    positive_known_sites = _positive_known_sites(known_sites)
+    if positive_known_sites.empty:
+        run_flags.add("missing_positive_known_sites")
+        return {f"top_{n}": None for n in values}
+    _require_matching_crs(candidates, positive_known_sites)
     candidate_geometries = _candidate_geometries_by_id(candidates)
-    known_geometries = _valid_geometries(known_sites)
+    known_geometries = _valid_geometries(positive_known_sites)
     if not known_geometries:
         run_flags.add("missing_known_sites")
         return {f"top_{n}": None for n in values}
@@ -127,6 +134,24 @@ def _known_site_recall_at_n(
     return recall
 
 
+def _positive_known_sites(known_sites: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    label_column = _first_existing_column(known_sites, ("expert_label", "status", "label"))
+    if label_column is None:
+        return known_sites
+    labels = known_sites[label_column].map(_normalized_label)
+    return known_sites[labels.isin(POSITIVE_LABELS)].copy()
+
+
+def _require_matching_crs(candidates: gpd.GeoDataFrame, known_sites: gpd.GeoDataFrame) -> None:
+    if candidates.crs is None or known_sites.crs is None:
+        raise ValueError("Known-site recall requires candidates and known_sites to declare CRS.")
+    if candidates.crs != known_sites.crs:
+        raise ValueError(
+            "Known-site recall requires candidates and known_sites to use the same CRS; "
+            f"got candidates={candidates.crs} known_sites={known_sites.crs}."
+        )
+
+
 def _candidate_geometries_by_id(candidates: gpd.GeoDataFrame) -> dict[str, BaseGeometry]:
     geometries: dict[str, BaseGeometry] = {}
     for _, row in candidates.iterrows():
@@ -135,6 +160,47 @@ def _candidate_geometries_by_id(candidates: gpd.GeoDataFrame) -> dict[str, BaseG
         if candidate_id and isinstance(geometry, BaseGeometry) and not geometry.is_empty:
             geometries[candidate_id] = geometry
     return geometries
+
+
+def _known_site_label_counts(known_sites: gpd.GeoDataFrame | None) -> dict[str, int]:
+    if known_sites is None or known_sites.empty:
+        return {}
+    label_column = _first_existing_column(known_sites, ("expert_label", "status", "label"))
+    if label_column is None:
+        return {"positive_assumed_unlabeled_known_sites": len(known_sites)}
+    counter: Counter[str] = Counter()
+    for value in known_sites[label_column]:
+        label = _label_count_value(value)
+        counter[label] += 1
+    return dict(sorted(counter.items()))
+
+
+def _known_site_confidence_counts(known_sites: gpd.GeoDataFrame | None) -> dict[str, int]:
+    if known_sites is None or known_sites.empty:
+        return {}
+    confidence_column = _first_existing_column(
+        known_sites,
+        ("expert_confidence", "confidence", "review_confidence"),
+    )
+    if confidence_column is None:
+        return {}
+    counter: Counter[str] = Counter()
+    for value in known_sites[confidence_column]:
+        text = _text(value).strip()
+        counter[text if text else "unknown"] += 1
+    return dict(sorted(counter.items()))
+
+
+def _first_existing_column(data: gpd.GeoDataFrame, columns: Sequence[str]) -> str | None:
+    for column in columns:
+        if column in data.columns:
+            return column
+    return None
+
+
+def _label_count_value(value: object) -> str:
+    label = _text(value).strip().lower().replace(" ", "_").replace("-", "_")
+    return label or "unknown"
 
 
 def _valid_geometries(data: gpd.GeoDataFrame) -> list[BaseGeometry]:

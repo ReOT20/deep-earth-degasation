@@ -37,6 +37,7 @@ class DynamicExtractionConfig:
     broad_patch_max_ringness: float = 0.0
     merge_distance_m: float = 30.0
     merge_across_dates: bool = True
+    min_distance_to_field_edge_m: float = 20.0
     connectivity: int = 2
 
 
@@ -152,6 +153,7 @@ def _extract_dynamic_objects_from_layers(
             merged_gdf,
             fields,
             field_id_column=field_id_column,
+            min_distance_to_field_edge_m=extraction_config.min_distance_to_field_edge_m,
         )
     return assign_stable_candidate_ids(merged_gdf)
 

@@ -16,7 +16,7 @@ from deep_earth_degasation.io.candidates import (
 )
 from deep_earth_degasation.io.labeling import score_row_to_labeling_row
 from deep_earth_degasation.reports.passport import render_candidate_passport
-from deep_earth_degasation.reports.quicklook import write_quicklook_png
+from deep_earth_degasation.reports.quicklook import _plot_geometry_bounds, write_quicklook_png
 
 CRS = "EPSG:32637"
 
@@ -133,6 +133,43 @@ def test_quicklook_png_generation_works_on_synthetic_raster(tmp_path: Path) -> N
     assert output_path.exists()
     assert output_path.stat().st_size > 0
     assert output_path.read_bytes().startswith(b"\x89PNG")
+
+
+def test_quicklook_no_transform_overlay_uses_candidate_bounds() -> None:
+    axis = _RecordingAxis()
+
+    _plot_geometry_bounds(axis, box(0, 0, 1, 1))
+
+    assert axis.lines == [
+        {
+            "xs": (0.0, 1.0, 1.0, 0.0, 0.0),
+            "ys": (0.0, 0.0, 1.0, 1.0, 0.0),
+            "color": "white",
+            "linewidth": 1.5,
+        }
+    ]
+
+
+class _RecordingAxis:
+    def __init__(self) -> None:
+        self.lines: list[dict[str, object]] = []
+
+    def plot(
+        self,
+        xs: tuple[float, ...],
+        ys: tuple[float, ...],
+        *,
+        color: str,
+        linewidth: float,
+    ) -> None:
+        self.lines.append(
+            {
+                "xs": xs,
+                "ys": ys,
+                "color": color,
+                "linewidth": linewidth,
+            }
+        )
 
 
 def _candidate_objects() -> gpd.GeoDataFrame:

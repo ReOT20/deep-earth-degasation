@@ -117,6 +117,70 @@ def test_validation_summary_handles_missing_known_sites_and_expert_labels() -> N
     assert summary["unlabeled_background_treated_as_negative"] is False
 
 
+def test_known_site_recall_uses_only_positive_known_site_labels() -> None:
+    score_rows = [
+        _score_row("candidate-a", rank=1),
+        _score_row("candidate-b", rank=2),
+        _score_row("candidate-c", rank=3),
+    ]
+    candidates = gpd.GeoDataFrame(
+        {
+            "object_id": ["candidate-a", "candidate-b", "candidate-c"],
+            "geometry": [box(0, 0, 10, 10), box(20, 0, 30, 10), box(40, 0, 50, 10)],
+        },
+        crs=CRS,
+    )
+    known_sites = gpd.GeoDataFrame(
+        {
+            "site_id": ["known-positive", "known-negative", "known-uncertain"],
+            "expert_label": ["weak_positive", "hard_negative", "uncertain"],
+            "expert_confidence": [4, 5, 2],
+            "geometry": [Point(5, 5), Point(25, 5), Point(45, 5)],
+        },
+        crs=CRS,
+    )
+
+    summary = build_validation_summary(
+        score_rows=score_rows,
+        candidates=candidates,
+        known_sites=known_sites,
+        top_n=3,
+        known_site_recall_top_n=(1, 2, 3),
+    )
+
+    assert summary["known_site_recall_at_n"] == {
+        "top_1": 1.0,
+        "top_2": 1.0,
+        "top_3": 1.0,
+    }
+    assert summary["known_site_label_counts"] == {
+        "hard_negative": 1,
+        "uncertain": 1,
+        "weak_positive": 1,
+    }
+    assert summary["known_site_confidence_counts"] == {"2": 1, "4": 1, "5": 1}
+
+
+def test_known_site_recall_rejects_crs_mismatch() -> None:
+    candidates = gpd.GeoDataFrame(
+        {"object_id": ["candidate-a"], "geometry": [box(0, 0, 10, 10)]},
+        crs=CRS,
+    )
+    known_sites = gpd.GeoDataFrame(
+        {"site_id": ["known-a"], "expert_label": ["positive"], "geometry": [Point(5, 5)]},
+        crs="EPSG:4326",
+    )
+
+    with pytest.raises(ValueError, match="same CRS"):
+        build_validation_summary(
+            score_rows=[_score_row("candidate-a", rank=1)],
+            candidates=candidates,
+            known_sites=known_sites,
+            top_n=1,
+            known_site_recall_top_n=(1,),
+        )
+
+
 def _score_row(
     candidate_id: str,
     *,

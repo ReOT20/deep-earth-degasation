@@ -19,7 +19,7 @@ from deep_earth_degasation.cli import app
 from deep_earth_degasation.config import load_config
 from deep_earth_degasation.io.vector import VectorDataError
 from deep_earth_degasation.pipeline.manifest import load_prepared_stack_manifest
-from deep_earth_degasation.pipeline.run_mvp import _load_vectors
+from deep_earth_degasation.pipeline.run_mvp import _false_positive_filter_config, _load_vectors
 
 CRS = "EPSG:32637"
 TRANSFORM = from_origin(0, 100, 10, 10)
@@ -84,6 +84,8 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert score_rows[0]["moisture_anomaly"] != ""
     assert score_rows[0]["false_positive_flags"] != ""
     assert score_rows[0]["missing_data_flags"] != ""
+    assert score_rows[0]["landcover_branch"] == "cropland"
+    assert "landcover_context_assumed_cropland_fields" in score_rows[0]["missing_data_flags"]
     assert score_rows[0]["passport_path"].endswith(".md")
 
     validation_summary = json.loads(validation_summary_json.read_text(encoding="utf-8"))
@@ -227,6 +229,46 @@ def test_optional_empty_vector_files_are_treated_as_absent(tmp_path: Path) -> No
     assert vectors["quarries"] is None
 
 
+def test_run_mvp_assigns_landcover_from_manifest_layer(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    landcover_path = tmp_path / "landcover.geojson"
+    _write_vector(landcover_path, {"landcover_class": ["trees"]}, [box(0, 0, 100, 100)])
+    _update_manifest(
+        manifest_path,
+        lambda manifest: manifest["vectors"].update(
+            {
+                "landcover": {
+                    "path": str(landcover_path),
+                    "crs": CRS,
+                    "role": "landcover",
+                    "required": False,
+                }
+            }
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
+    assert row["landcover_branch"] == "forest"
+    assert "landcover_context_assumed_cropland_fields" not in row["missing_data_flags"]
+    assert "missing_forest_branch_scoring" in row["missing_data_flags"]
+
+
 def test_required_empty_vector_files_still_fail(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     manifest_path = _write_prepared_data(tmp_path)
@@ -332,6 +374,74 @@ def test_candidates_top_n_limits_review_exports(tmp_path: Path) -> None:
     assert len(list((output_dir / "passports").glob("*.md"))) == 2
     assert len(list((output_dir / "time_series").glob("*.csv"))) == 2
     assert len(list((output_dir / "quicklooks").glob("*.png"))) == 2
+
+
+def test_field_edge_buffer_falls_back_to_object_constraint(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: (
+            config["object_constraints"].update({"min_distance_to_field_edge_m": 13.0}),
+            config["false_positive_filters"].pop("field_edge_buffer_m", None),
+        ),
+    )
+
+    filter_config = _false_positive_filter_config(load_config(config_path))
+
+    assert filter_config.field_edge_buffer_m == 13.0
+
+
+def test_connected_components_false_is_rejected(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: config["dynamic_detector"].update({"connected_components": False}),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(tmp_path / "outputs"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert "connected_components=false is not supported" in str(result.exception)
+
+
+def test_configured_weather_context_without_weather_data_is_flagged(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    _update_config(
+        config_path,
+        lambda config: config["scoring"]["cropland"].update({"post_rain_weight": 0.2}),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
+    assert "missing_weather_context" in row["missing_data_flags"]
 
 
 def test_merge_across_dates_toggle_does_not_overmerge_composite_components(

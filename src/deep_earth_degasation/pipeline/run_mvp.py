@@ -10,6 +10,7 @@ from typing import Any
 import geopandas as gpd
 import numpy as np
 from rasterio.features import rasterize
+from shapely.geometry.base import BaseGeometry
 
 from deep_earth_degasation.anomaly.composite import CompositeAnomalyMap, composite_anomaly_map
 from deep_earth_degasation.anomaly.field_normalization import (
@@ -26,6 +27,7 @@ from deep_earth_degasation.context.false_positive import (
     FalsePositiveFilterConfig,
     apply_false_positive_filters,
 )
+from deep_earth_degasation.context.landcover import assign_landcover_context
 from deep_earth_degasation.features.sar import sentinel1_features_from_stack
 from deep_earth_degasation.features.spectral import sentinel2_features_from_stack
 from deep_earth_degasation.features.thermal import landsat_thermal_features_from_stack
@@ -81,6 +83,7 @@ def run_dynamic_mvp(
 ) -> DynamicMVPArtifactPaths:
     """Run the prepared-data dynamic MVP artifact pipeline."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    _validate_runtime_config(config)
     stack = load_raster_stack(manifest)
     reference_layer = _reference_layer(stack)
     vectors = _load_vectors(manifest, config)
@@ -88,6 +91,7 @@ def run_dynamic_mvp(
     field_id_column = manifest.vectors["fields"].id_field or "stable_id"
     field_ids = _rasterize_fields(fields, reference_layer, field_id_column=field_id_column)
     features, feature_flags = _dynamic_features(stack, reference_layer, config)
+    feature_flags = (*feature_flags, *_configured_missing_context_flags(config, vectors))
     anomaly_layers, anomaly_flags = _field_anomaly_layers(
         features,
         field_ids,
@@ -111,6 +115,7 @@ def run_dynamic_mvp(
             _false_positive_context(vectors),
             _false_positive_filter_config(config),
         )
+        objects = _append_landcover_context(objects, vectors, config)
         objects = _append_missing_flags(objects, (*feature_flags, *anomaly_flags))
         objects = _append_dynamic_detector_flags(objects, config)
         objects = score_candidate_objects(
@@ -341,13 +346,22 @@ def _dynamic_extraction_config(config: MVPConfig) -> DynamicExtractionConfig:
             if dynamic is not None and dynamic.merge_across_dates is not None
             else True
         ),
+        min_distance_to_field_edge_m=constraints.min_distance_to_field_edge_m,
     )
 
 
 def _false_positive_filter_config(config: MVPConfig) -> FalsePositiveFilterConfig:
     filters = config.false_positive_filters
+    field_edge_buffer_m = (
+        filters.field_edge_buffer_m
+        if filters is not None and filters.field_edge_buffer_m is not None
+        else config.object_constraints.min_distance_to_field_edge_m
+    )
     if filters is None:
-        return FalsePositiveFilterConfig(penalties=_false_positive_penalties(config))
+        return FalsePositiveFilterConfig(
+            field_edge_buffer_m=field_edge_buffer_m,
+            penalties=_false_positive_penalties(config),
+        )
     return FalsePositiveFilterConfig(
         flag_roads=filters.flag_roads,
         flag_water=filters.flag_water,
@@ -368,7 +382,7 @@ def _false_positive_filter_config(config: MVPConfig) -> FalsePositiveFilterConfi
         water_buffer_m=filters.water_buffer_m or 20.0,
         builtup_buffer_m=filters.builtup_buffer_m or 50.0,
         woody_patch_buffer_m=filters.woody_patch_buffer_m or 20.0,
-        field_edge_buffer_m=filters.field_edge_buffer_m or 20.0,
+        field_edge_buffer_m=field_edge_buffer_m,
         max_elongation_without_penalty=filters.max_elongation_without_penalty or 4.0,
         penalties=_false_positive_penalties(config),
     )
@@ -407,6 +421,89 @@ def _false_positive_context(vectors: dict[str, VectorLayer | None]) -> FalsePosi
 def _vector_data(vectors: dict[str, VectorLayer | None], name: str) -> gpd.GeoDataFrame | None:
     layer = vectors.get(name)
     return None if layer is None else layer.data
+
+
+def _validate_runtime_config(config: MVPConfig) -> None:
+    dynamic = config.dynamic_detector
+    if dynamic is not None and dynamic.connected_components is False:
+        raise ValueError(
+            "dynamic_detector.connected_components=false is not supported by run-mvp; "
+            "set it to true or defer the field."
+        )
+
+
+def _configured_missing_context_flags(
+    config: MVPConfig,
+    vectors: dict[str, VectorLayer | None],
+) -> tuple[str, ...]:
+    flags: set[str] = set()
+    if _post_rain_context_configured(config):
+        flags.add("missing_weather_context")
+    if "geology_context" in config.anomaly_components and _vector_data(vectors, "geology") is None:
+        flags.add("missing_geology_context")
+    return tuple(sorted(flags))
+
+
+def _post_rain_context_configured(config: MVPConfig) -> bool:
+    if "post_rain_drying" in config.anomaly_components:
+        return True
+    if (
+        config.scoring.cropland.post_rain_weight is not None
+        and config.scoring.cropland.post_rain_weight > 0
+    ):
+        return True
+    return bool(
+        config.features is not None
+        and config.features.weather is not None
+        and config.features.weather.features
+    )
+
+
+def _append_landcover_context(
+    objects: gpd.GeoDataFrame,
+    vectors: dict[str, VectorLayer | None],
+    config: MVPConfig,
+) -> gpd.GeoDataFrame:
+    landcover = _vector_data(vectors, "landcover")
+    if landcover is not None:
+        output = assign_landcover_context(
+            objects,
+            landcover,
+            classes=config.land_cover.classes,
+            mixed_candidate_min_classes=config.land_cover.mixed_candidate_min_classes,
+        )
+        return _append_row_context_flags(output, "landcover_context_flags")
+
+    primary_branch = (config.land_cover.primary_branch or "").lower()
+    if primary_branch == "cropland":
+        output = objects.copy()
+        output["landcover_branch"] = "cropland"
+        output["dominant_landcover_branch"] = "cropland"
+        output["landcover_proportions"] = [{"cropland": 1.0} for _ in range(len(output))]
+        output["landcover_context_flags"] = [
+            ["landcover_context_assumed_cropland_fields"] for _ in range(len(output))
+        ]
+        return _append_row_context_flags(output, "landcover_context_flags")
+
+    output = objects.copy()
+    output["landcover_branch"] = "unknown"
+    output["dominant_landcover_branch"] = "unknown"
+    output["landcover_proportions"] = [{} for _ in range(len(output))]
+    output["landcover_context_flags"] = [["missing_landcover_context"] for _ in range(len(output))]
+    return _append_row_context_flags(output, "landcover_context_flags")
+
+
+def _append_row_context_flags(gdf: gpd.GeoDataFrame, column: str) -> gpd.GeoDataFrame:
+    output = gdf.copy()
+    missing_data_flags: list[tuple[str, ...]] = []
+    for _, row in output.iterrows():
+        existing = (
+            _list_value(row["missing_data_flags"]) if "missing_data_flags" in row.index else ()
+        )
+        context_flags = _list_value(row[column]) if column in row.index else ()
+        missing_data_flags.append(tuple(sorted(set(existing) | set(context_flags))))
+    output["missing_data_flags"] = missing_data_flags
+    return output
 
 
 def _append_missing_flags(objects: gpd.GeoDataFrame, flags: tuple[str, ...]) -> gpd.GeoDataFrame:
@@ -552,7 +649,13 @@ def _write_artifacts(
 
     if output_config.generate_quicklooks is True:
         _clear_generated_files(paths.quicklooks_dir, "dynamic-*.png")
-        _write_quicklooks(objects, composite, paths.quicklooks_dir, limit=review_limit)
+        _write_quicklooks(
+            objects,
+            composite,
+            paths.quicklooks_dir,
+            transform=_reference_layer(stack).transform,
+            limit=review_limit,
+        )
     elif paths.quicklooks_dir.exists():
         _clear_generated_files(paths.quicklooks_dir, "dynamic-*.png")
 
@@ -599,16 +702,32 @@ def _write_quicklooks(
     composite: CompositeAnomalyMap,
     output_dir: Path,
     *,
+    transform: Any,
     limit: int,
 ) -> None:
     for score_row in candidate_object_score_rows(objects, limit=limit):
         candidate_id = str(score_row["candidate_id"])
         rank = int(score_row["rank"])
+        geometry = _candidate_geometry_by_id(objects, candidate_id)
         write_quicklook_png(
             composite.data,
             output_dir / f"dynamic-object-{rank:06d}.png",
+            candidate_geometry=geometry,
+            transform=transform,
             title=candidate_id,
         )
+
+
+def _candidate_geometry_by_id(
+    objects: gpd.GeoDataFrame,
+    candidate_id: str,
+) -> BaseGeometry | None:
+    for _, row in objects.iterrows():
+        row_id = row["candidate_id"] if "candidate_id" in row.index else row.get("object_id", "")
+        geometry = row.geometry
+        if str(row_id) == candidate_id and isinstance(geometry, BaseGeometry):
+            return geometry
+    return None
 
 
 def _feature_snapshot_id(manifest: PreparedStackManifest) -> str:

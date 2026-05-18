@@ -222,14 +222,23 @@ def _apply_dynamic_flag_caps(
     object_score: float, row: Any, scoring_config: ScoringConfig | None
 ) -> float:
     flags = set(_tuple_value(_row_value(row, "dynamic_object_flags")))
-    if "broad_patch" not in flags:
+    support_pixels = _score_value(_row_value(row, "support_pixel_count"))
+    if not flags and support_pixels > 12:
         return object_score
     thresholds = (
         _DEFAULT_PRIORITY_THRESHOLDS
         if scoring_config is None or scoring_config.priority_thresholds is None
         else scoring_config.priority_thresholds
     )
-    return min(object_score, max(0.0, thresholds.B - 1.0e-6))
+    strong_support = _has_strong_multisensor_support(row)
+    capped_score = object_score
+    if "too_large" in flags or "broad_patch" in flags:
+        capped_score = min(capped_score, max(0.0, thresholds.B - 1.0e-6))
+    if not strong_support and ("too_small" in flags or "elongated" in flags):
+        capped_score = min(capped_score, max(0.0, thresholds.C - 1.0e-6))
+    if not strong_support and 0 < support_pixels <= 12:
+        capped_score = min(capped_score, max(0.0, thresholds.B - 1.0e-6))
+    return capped_score
 
 
 def _dynamic_score(
@@ -364,7 +373,15 @@ def _landcover_branch(row: Any) -> str:
     branch = _text(_row_value(row, "landcover_branch")).lower()
     if branch:
         return branch
-    return "cropland"
+    return "unknown"
+
+
+def _has_strong_multisensor_support(row: Any) -> bool:
+    if _tuple_value(_row_value(row, "false_positive_flags")):
+        return False
+    source_feature_count = len(set(_tuple_value(_row_value(row, "source_feature_names"))))
+    repeated_seasons = _score_value(_row_value(row, "repeated_seasons"))
+    return source_feature_count >= 3 and repeated_seasons >= 2
 
 
 def _dominant_evidence(

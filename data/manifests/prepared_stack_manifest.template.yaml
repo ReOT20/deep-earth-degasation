@@ -18,6 +18,11 @@ vectors:
     role: fields
     required: true
     id_field: field_id
+  landcover:
+    path: data/context/landcover.geojson
+    crs: EPSG:32637
+    role: landcover
+    required: false
   roads:
     path: data/context/roads.geojson
     crs: EPSG:32637
