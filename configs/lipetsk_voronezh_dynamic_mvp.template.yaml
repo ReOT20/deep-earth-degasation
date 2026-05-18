@@ -75,7 +75,7 @@ features:
     optional_indices: [red_edge, EVI]
     cloud_threshold: 30
   sentinel1:
-    features: [VV, VH, VV_VH_ratio, temporal_difference]
+    features: [VV, VH, VV_VH_ratio, temporal_difference, sar_event_response]
   landsat:
     features: [LST]
   weather:
@@ -95,7 +95,7 @@ anomaly_components:
     high_score_means: local_dryness_or_moisture_stress
     weight: 0.18
   vegetation_stress:
-    inputs: [NDVI]
+    inputs: [NDVI, red_edge, NDRE]
     high_score_means: local_vegetation_stress
     weight: 0.14
   soil_brightness:
@@ -103,8 +103,8 @@ anomaly_components:
     high_score_means: local_soil_brightening
     weight: 0.14
   sar:
-    inputs: [VV, VH, VV_VH_ratio]
-    high_score_means: local_sar_anomaly
+    inputs: [VV, VH, VV_VH_ratio, sar_event_response]
+    high_score_means: local_sar_anomaly_or_event_response
     weight: 0.12
   thermal:
     inputs: [LST]
@@ -119,7 +119,7 @@ anomaly_components:
     high_score_means: repeated_anomaly
     weight: 0.10
   post_rain_drying:
-    inputs: [days_since_rain, moisture_anomaly]
+    inputs: [post_rain_drying]
     high_score_means: accelerated_post_rain_drying
     weight: 0.06
   geology_context:

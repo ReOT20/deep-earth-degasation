@@ -33,10 +33,18 @@ from deep_earth_degasation.context.false_positive import (
     apply_false_positive_filters,
 )
 from deep_earth_degasation.context.landcover import assign_landcover_context
-from deep_earth_degasation.features.sar import sentinel1_features_from_stack
+from deep_earth_degasation.features.sar import (
+    sentinel1_event_response_features,
+    sentinel1_features_from_stack,
+)
 from deep_earth_degasation.features.spectral import sentinel2_features_from_stack
 from deep_earth_degasation.features.thermal import landsat_thermal_features_from_stack
 from deep_earth_degasation.features.types import DynamicFeatureLayer, DynamicFeatureResult
+from deep_earth_degasation.features.weather import (
+    WeatherContext,
+    load_weather_context_manifest,
+    post_rain_drying_features,
+)
 from deep_earth_degasation.io.candidates import (
     candidate_object_score_rows,
     write_candidate_object_scores_csv,
@@ -97,8 +105,8 @@ def run_dynamic_mvp(
     fields = _required_vector(vectors, "fields").data
     field_id_column = manifest.vectors["fields"].id_field or "stable_id"
     field_ids = _rasterize_fields(fields, reference_layer, field_id_column=field_id_column)
-    features, feature_flags = _dynamic_features(stack, reference_layer, config)
-    feature_flags = (*feature_flags, *_configured_missing_context_flags(config, vectors))
+    features, feature_flags = _dynamic_features(stack, reference_layer, config, manifest)
+    feature_flags = (*feature_flags, *_configured_missing_context_flags(config, vectors, manifest))
     anomaly_layers, anomaly_flags = _field_anomaly_layers(
         features,
         field_ids,
@@ -252,18 +260,86 @@ def _dynamic_features(
     stack: RasterStack,
     reference_layer: RasterLayer,
     config: MVPConfig,
+    manifest: PreparedStackManifest,
 ) -> tuple[tuple[DynamicFeatureLayer, ...], tuple[str, ...]]:
-    results = (
-        sentinel2_features_from_stack(stack),
-        sentinel1_features_from_stack(stack),
-        landsat_thermal_features_from_stack(stack),
-    )
     features: list[DynamicFeatureLayer] = []
     flags: list[str] = []
-    for result in results:
+    sentinel2_result = sentinel2_features_from_stack(stack)
+    sentinel1_result = sentinel1_features_from_stack(stack)
+    for result in (
+        sentinel2_result,
+        sentinel1_result,
+        landsat_thermal_features_from_stack(stack),
+    ):
         features.extend(_matching_grid_features(result, reference_layer, flags, config))
         flags.extend(result.missing_data_flags)
+
+    weather_context = _load_weather_context(manifest)
+    event_results = _event_conditioned_feature_results(
+        tuple(features),
+        weather_context,
+        config,
+    )
+    for result in event_results:
+        features.extend(_matching_grid_features(result, reference_layer, flags, config))
+        flags.extend(result.missing_data_flags)
+    flags.extend(_sar_reliability_flags(tuple(features), config))
     return tuple(features), tuple(sorted(set(flags)))
+
+
+def _load_weather_context(manifest: PreparedStackManifest) -> WeatherContext | None:
+    if manifest.weather_context is None:
+        return None
+    return load_weather_context_manifest(manifest.weather_context.path)
+
+
+def _event_conditioned_feature_results(
+    features: tuple[DynamicFeatureLayer, ...],
+    weather_context: WeatherContext | None,
+    config: MVPConfig,
+) -> tuple[DynamicFeatureResult, ...]:
+    results: list[DynamicFeatureResult] = []
+    if _post_rain_context_configured(config):
+        results.append(
+            post_rain_drying_features(
+                _moisture_features(features),
+                weather_context,
+            )
+        )
+    if _sar_event_response_configured(config):
+        results.append(
+            sentinel1_event_response_features(
+                _sar_features(features),
+                weather_context,
+            )
+        )
+    return tuple(results)
+
+
+def _moisture_features(
+    features: tuple[DynamicFeatureLayer, ...],
+) -> tuple[DynamicFeatureLayer, ...]:
+    return tuple(feature for feature in features if feature.name in {"NDMI", "NDWI", "MSI"})
+
+
+def _sar_features(
+    features: tuple[DynamicFeatureLayer, ...],
+) -> tuple[DynamicFeatureLayer, ...]:
+    return tuple(feature for feature in features if feature.sensor.lower() == "sentinel1")
+
+
+def _sar_reliability_flags(
+    features: tuple[DynamicFeatureLayer, ...],
+    config: MVPConfig,
+) -> tuple[str, ...]:
+    if not _sar_event_response_configured(config) and "sar" not in config.anomaly_components:
+        return ()
+    if not any(feature.sensor.lower() == "sentinel1" for feature in features):
+        return ()
+    vegetation_names = {"NDVI", "red_edge", "NDRE"}
+    if any(feature.name in vegetation_names for feature in features):
+        return ()
+    return ("missing_crop_density_context_for_sar",)
 
 
 def _matching_grid_features(
@@ -289,7 +365,7 @@ def _feature_in_configured_time_window(feature: DynamicFeatureLayer, config: MVP
         return True
     month = int(feature.date[5:7])
     name = feature.name.lower()
-    if any(token in name for token in ("ndvi", "red_edge", "red-edge", "vegetation")):
+    if any(token in name for token in ("ndvi", "ndre", "red_edge", "red-edge", "vegetation")):
         return month in config.time.vegetation_months
     if any(token in name for token in ("bsi", "brightness", "bare_soil", "bare-soil")):
         return month in config.time.bare_soil_months
@@ -378,6 +454,10 @@ def _hierarchical_residual_layers(
 def _component_for_feature(feature: DynamicFeatureLayer, config: MVPConfig) -> str | None:
     for component_name, component in config.anomaly_components.items():
         if feature.name in component.inputs:
+            return component_name
+        if component_name == "post_rain_drying" and feature.name.startswith("post_rain_drying"):
+            return component_name
+        if component_name == "sar" and feature.name.startswith("sar_event_response"):
             return component_name
     return None
 
@@ -492,9 +572,10 @@ def _validate_runtime_config(config: MVPConfig) -> None:
 def _configured_missing_context_flags(
     config: MVPConfig,
     vectors: dict[str, VectorLayer | None],
+    manifest: PreparedStackManifest,
 ) -> tuple[str, ...]:
     flags: set[str] = set()
-    if _post_rain_context_configured(config):
+    if _post_rain_context_configured(config) and manifest.weather_context is None:
         flags.add("missing_weather_context")
     if "geology_context" in config.anomaly_components and _vector_data(vectors, "geology") is None:
         flags.add("missing_geology_context")
@@ -513,6 +594,19 @@ def _post_rain_context_configured(config: MVPConfig) -> bool:
         config.features is not None
         and config.features.weather is not None
         and config.features.weather.features
+    )
+
+
+def _sar_event_response_configured(config: MVPConfig) -> bool:
+    sar_component = config.anomaly_components.get("sar")
+    if sar_component is not None and any(
+        "event_response" in input_name for input_name in sar_component.inputs
+    ):
+        return True
+    return bool(
+        config.features is not None
+        and config.features.sentinel1 is not None
+        and any("event_response" in name for name in config.features.sentinel1.features)
     )
 
 
@@ -749,7 +843,7 @@ def _write_residual_products(
     residual_layers: tuple[FieldAnomalyLayer, ...],
     residual_flags: tuple[str, ...],
 ) -> None:
-    arrays = {
+    arrays: dict[str, Any] = {
         f"{index:03d}_{_safe_layer_name(layer.name)}_{layer.residual_type}": layer.data
         for index, layer in enumerate(residual_layers, start=1)
     }

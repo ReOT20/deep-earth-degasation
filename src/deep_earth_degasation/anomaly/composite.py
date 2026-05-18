@@ -54,7 +54,7 @@ def composite_anomaly_map(
             layer
             for layer in layers
             if layer.component == component_name
-            and any(feature_name in config.inputs for feature_name in layer.source_feature_names)
+            and _matches_component_inputs(layer.source_feature_names, config.inputs)
         ]
         if not matching_layers:
             flags.append(f"missing_component_{component_name}")
@@ -102,6 +102,21 @@ def composite_anomaly_map(
 
 def _positive_support(data: FloatArray) -> FloatArray:
     return np.clip(data, 0.0, None)
+
+
+def _matches_component_inputs(
+    source_feature_names: tuple[str, ...],
+    configured_inputs: Sequence[str],
+) -> bool:
+    configured = set(configured_inputs)
+    for feature_name in source_feature_names:
+        if feature_name in configured:
+            return True
+        if feature_name.startswith("post_rain_drying") and "post_rain_drying" in configured:
+            return True
+        if feature_name.startswith("sar_event_response") and "sar_event_response" in configured:
+            return True
+    return False
 
 
 def _nanmean_stack(arrays: tuple[FloatArray, ...]) -> FloatArray:

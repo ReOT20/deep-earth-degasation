@@ -508,6 +508,109 @@ def test_configured_weather_context_without_weather_data_is_flagged(tmp_path: Pa
     assert "missing_weather_context" in row["missing_data_flags"]
 
 
+def test_run_mvp_integrates_event_conditioned_features(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    ndmi_before = np.full((10, 10), 0.8, dtype=np.float32)
+    ndre = np.full((10, 10), 0.7, dtype=np.float32)
+    vv_before = np.full((10, 10), 2.0, dtype=np.float32)
+    vv_after = np.full((10, 10), 2.0, dtype=np.float32)
+    ndre[4:7, 4:7] = 0.1
+    vv_after[4:7, 4:7] = 5.0
+    _write_raster(tmp_path / "ndmi_before.tif", ndmi_before)
+    _write_raster(tmp_path / "ndre.tif", ndre)
+    _write_raster(tmp_path / "vv_before.tif", vv_before)
+    _write_raster(tmp_path / "vv_after.tif", vv_after)
+    weather_path = tmp_path / "weather.yaml"
+    weather_path.write_text(
+        """
+events:
+  - date: "2024-05-10"
+    rainfall_mm: 12.0
+    source_id: rain_1
+""",
+        encoding="utf-8",
+    )
+    _update_config(
+        config_path,
+        lambda config: (
+            config.setdefault("features", {}).update(
+                {
+                    "sentinel2": {
+                        "indices": ["NDVI", "NDMI", "BSI"],
+                        "optional_indices": ["NDRE"],
+                        "cloud_threshold": 30,
+                    },
+                    "sentinel1": {"features": ["VV", "sar_event_response"]},
+                    "landsat": {"features": ["LST"]},
+                    "weather": {"features": ["post_rain_drying"]},
+                }
+            ),
+            config["anomaly_components"]["vegetation_stress"].update({"inputs": ["NDRE"]}),
+            config["anomaly_components"].update(
+                {
+                    "post_rain_drying": {
+                        "inputs": ["post_rain_drying"],
+                        "high_score_means": "supporting_post_rain_drying",
+                        "weight": 0.2,
+                    },
+                    "sar": {
+                        "inputs": ["VV", "sar_event_response"],
+                        "high_score_means": "supporting_sar_event_response",
+                        "weight": 0.2,
+                    },
+                }
+            ),
+            config["scoring"]["cropland"].update({"post_rain_weight": 0.1, "sar_weight": 0.1}),
+        ),
+    )
+    _update_manifest(
+        manifest_path,
+        lambda manifest: (
+            manifest.update({"weather_context": {"path": str(weather_path)}}),
+            manifest["raster_layers"].extend(
+                [
+                    _layer("ndmi_before", "NDMI", "ndmi_before.tif", date="2024-05-01"),
+                    _layer("ndre", "NDRE", "ndre.tif", date="2024-05-15"),
+                    {
+                        **_layer("vv_before", "VV", "vv_before.tif", date="2024-05-01"),
+                        "sensor": "sentinel1",
+                    },
+                    {
+                        **_layer("vv_after", "VV", "vv_after.tif", date="2024-05-15"),
+                        "sensor": "sentinel1",
+                    },
+                ]
+            ),
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
+    assert row["vegetation_stress"] != ""
+    assert row["post_rain_drying"] != ""
+    assert row["sar_anomaly"] != ""
+    assert "NDRE" in row["source_feature_names"]
+    assert "post_rain_drying_NDMI" in row["source_feature_names"]
+    assert "sar_event_response_VV" in row["source_feature_names"]
+    assert "missing_weather_context" not in row["missing_data_flags"]
+    assert "missing_crop_density_context_for_sar" not in row["missing_data_flags"]
+
+
 def test_merge_across_dates_toggle_does_not_overmerge_composite_components(
     tmp_path: Path,
 ) -> None:
@@ -556,9 +659,19 @@ def test_merge_across_dates_toggle_does_not_overmerge_composite_components(
 def test_time_windows_exclude_out_of_window_components(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     manifest_path = _write_prepared_data(tmp_path)
+    ndre = np.full((10, 10), 0.7, dtype=np.float32)
+    ndre[4:7, 4:7] = 0.1
+    _write_raster(tmp_path / "ndre.tif", ndre)
     _update_config(
         config_path,
-        lambda config: config["time"].update({"vegetation_months": [6], "bare_soil_months": [5]}),
+        lambda config: (
+            config["time"].update({"vegetation_months": [6], "bare_soil_months": [5]}),
+            config["anomaly_components"]["vegetation_stress"].update({"inputs": ["NDVI", "NDRE"]}),
+        ),
+    )
+    _update_manifest(
+        manifest_path,
+        lambda manifest: manifest["raster_layers"].append(_layer("ndre", "NDRE", "ndre.tif")),
     )
     output_dir = tmp_path / "outputs"
 
@@ -579,6 +692,7 @@ def test_time_windows_exclude_out_of_window_components(tmp_path: Path) -> None:
     row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
     assert row["vegetation_stress"] == ""
     assert "skipped_out_of_window_NDVI_2024-05-15" in row["missing_data_flags"]
+    assert "skipped_out_of_window_NDRE_2024-05-15" in row["missing_data_flags"]
 
 
 def test_composite_source_observations_satisfy_minimum_observation_flag(

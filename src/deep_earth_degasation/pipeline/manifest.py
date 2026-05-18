@@ -57,6 +57,11 @@ class QualitySpec:
 
 
 @dataclass(frozen=True)
+class WeatherContextSpec:
+    path: Path
+
+
+@dataclass(frozen=True)
 class PreparedStackManifest:
     path: Path
     run: RunManifestSpec
@@ -67,6 +72,7 @@ class PreparedStackManifest:
     raster_layers: tuple[RasterLayerSpec, ...]
     quality: QualitySpec
     notes: tuple[str, ...]
+    weather_context: WeatherContextSpec | None = None
 
 
 def load_prepared_stack_manifest(path: str | Path) -> PreparedStackManifest:
@@ -79,7 +85,7 @@ def load_prepared_stack_manifest(path: str | Path) -> PreparedStackManifest:
     _require_keys(
         data,
         required={"run", "crs", "resolution_m", "aoi", "vectors", "raster_layers", "quality"},
-        optional={"notes"},
+        optional={"notes", "weather_context"},
         section="manifest",
     )
     base_dir = manifest_path.parent
@@ -95,6 +101,7 @@ def load_prepared_stack_manifest(path: str | Path) -> PreparedStackManifest:
         vectors=_parse_vectors(data["vectors"], base_dir=base_dir),
         raster_layers=layers,
         quality=_parse_quality(data["quality"]),
+        weather_context=_parse_weather_context(data.get("weather_context"), base_dir=base_dir),
         notes=tuple(str(note) for note in data.get("notes", [])),
     )
 
@@ -211,6 +218,14 @@ def _parse_quality(value: object) -> QualitySpec:
             else int(data["min_valid_observations_per_season"])
         ),
     )
+
+
+def _parse_weather_context(value: object, *, base_dir: Path) -> WeatherContextSpec | None:
+    if value is None:
+        return None
+    data = _require_mapping(value, "weather_context")
+    _require_keys(data, required={"path"}, optional=set(), section="weather_context")
+    return WeatherContextSpec(path=_resolve_path(base_dir, data["path"]))
 
 
 def _reject_duplicate_layer_ids(layers: tuple[RasterLayerSpec, ...]) -> None:

@@ -55,7 +55,7 @@ def _candidate_view(
         return raster, None
 
     minx, miny, maxx, maxy = candidate_geometry.bounds
-    inverse = ~transform
+    inverse: Any = ~transform
     pixels = [
         inverse * (minx, miny),
         inverse * (minx, maxy),
@@ -71,8 +71,9 @@ def _candidate_view(
     if row_start >= row_stop or column_start >= column_stop:
         return raster, None
 
-    left, top = transform * (column_start, row_start)
-    right, bottom = transform * (column_stop, row_stop)
+    forward: Any = transform
+    left, top = forward * (column_start, row_start)
+    right, bottom = forward * (column_stop, row_stop)
     extent = (left, right, bottom, top)
     return raster[row_start:row_stop, column_start:column_stop], extent
 

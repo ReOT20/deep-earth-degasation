@@ -1,0 +1,5 @@
+events:
+  - date: "2024-05-10"
+    rainfall_mm: 12.0
+    source_id: prepared_rain_event_1
+    source: prepared

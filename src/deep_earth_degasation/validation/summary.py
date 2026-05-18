@@ -5,7 +5,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import geopandas as gpd
 from shapely.geometry.base import BaseGeometry
@@ -139,7 +139,7 @@ def _positive_known_sites(known_sites: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if label_column is None:
         return known_sites
     labels = known_sites[label_column].map(_normalized_label)
-    return known_sites[labels.isin(POSITIVE_LABELS)].copy()
+    return cast(gpd.GeoDataFrame, known_sites.loc[labels.isin(tuple(POSITIVE_LABELS))].copy())
 
 
 def _require_matching_crs(candidates: gpd.GeoDataFrame, known_sites: gpd.GeoDataFrame) -> None:

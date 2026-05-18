@@ -11,6 +11,8 @@ SPECTRAL_EVIDENCE_DIRECTIONS = {
     "MSI": "higher_values_indicate_moisture_stress",
     "BSI": "higher_values_indicate_bare_soil_or_brightness",
     "brightness": "higher_values_indicate_brightness",
+    "red_edge": "lower_values_indicate_red_edge_vegetation_stress",
+    "NDRE": "lower_values_indicate_red_edge_vegetation_stress",
 }
 
 
@@ -27,7 +29,10 @@ def sentinel2_features_from_stack(stack: RasterStack) -> DynamicFeatureResult:
     _append_prepared_layer(features, source, "BSI", "sentinel2", flags)
     _append_prepared_layer(features, source, "brightness", "sentinel2", flags)
 
-    if "red_edge" not in source:
+    red_edge_count = len(features)
+    _append_optional_prepared_layer(features, source, "red_edge")
+    _append_optional_prepared_layer(features, source, "NDRE")
+    if len(features) == red_edge_count:
         flags.append("missing_sentinel2_red_edge")
     if "EVI" not in source:
         flags.append("missing_sentinel2_EVI")
@@ -94,6 +99,25 @@ def _append_prepared_layer(
                 name=feature_name,
                 data=layer.data,
                 sensor=sensor,
+                date=layer.spec.date,
+                source_layer_ids=(layer.spec.id,),
+                evidence_direction=SPECTRAL_EVIDENCE_DIRECTIONS[feature_name],
+            )
+        )
+
+
+def _append_optional_prepared_layer(
+    features: list[DynamicFeatureLayer],
+    source: dict[str, list[RasterLayer]],
+    feature_name: str,
+) -> None:
+    layers = source.get(feature_name, [])
+    for layer in sorted(layers, key=lambda item: (item.spec.date or "", item.spec.id)):
+        features.append(
+            DynamicFeatureLayer(
+                name=feature_name,
+                data=layer.data,
+                sensor="sentinel2",
                 date=layer.spec.date,
                 source_layer_ids=(layer.spec.id,),
                 evidence_direction=SPECTRAL_EVIDENCE_DIRECTIONS[feature_name],

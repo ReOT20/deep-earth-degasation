@@ -588,9 +588,11 @@ def _dynamic_evidence(candidate: Any) -> dict[str, str | float]:
 
 def _dynamic_evidence_field(feature_name: str) -> str | None:
     normalized = feature_name.lower()
+    if "post_rain" in normalized or "drying" in normalized:
+        return "post_rain_drying"
     if any(token in normalized for token in ("ndmi", "ndwi", "msi", "moisture")):
         return "moisture_anomaly"
-    if any(token in normalized for token in ("ndvi", "red_edge", "red-edge", "vegetation")):
+    if any(token in normalized for token in ("ndvi", "ndre", "red_edge", "red-edge", "vegetation")):
         return "vegetation_stress"
     if any(token in normalized for token in ("bsi", "brightness", "bare_soil", "bare-soil")):
         return "soil_brightness_bsi"
@@ -598,8 +600,6 @@ def _dynamic_evidence_field(feature_name: str) -> str | None:
         return "thermal_anomaly"
     if any(token in normalized for token in ("sar", "vv", "vh")):
         return "sar_anomaly"
-    if "post_rain" in normalized or "drying" in normalized:
-        return "post_rain_drying"
     if "geology" in normalized:
         return "geology_context"
     return None

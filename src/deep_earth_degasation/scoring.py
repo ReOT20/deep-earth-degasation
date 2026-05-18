@@ -339,9 +339,11 @@ def _shape_support(*, circularity: float, elongation: float) -> float:
 
 def _feature_component(feature_name: str) -> str | None:
     normalized = feature_name.lower()
+    if "post_rain" in normalized or "drying" in normalized:
+        return "post_rain"
     if any(token in normalized for token in ("ndmi", "ndwi", "msi", "moisture")):
         return "moisture"
-    if any(token in normalized for token in ("ndvi", "red_edge", "red-edge", "vegetation")):
+    if any(token in normalized for token in ("ndvi", "ndre", "red_edge", "red-edge", "vegetation")):
         return "vegetation"
     if any(token in normalized for token in ("bsi", "brightness", "bare_soil", "bare-soil")):
         return "brightness"
@@ -349,8 +351,6 @@ def _feature_component(feature_name: str) -> str | None:
         return "thermal"
     if any(token in normalized for token in ("sar", "vv", "vh")):
         return "sar"
-    if "post_rain" in normalized or "drying" in normalized:
-        return "post_rain"
     if "geology" in normalized:
         return "geology"
     return None

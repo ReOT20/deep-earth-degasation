@@ -59,6 +59,9 @@ vectors:
     role: known_sites
     required: false
 
+weather_context:
+  path: data/context/weather_events.template.yaml
+
 raster_layers:
   - id: s2_ndvi_2024_05_15
     sensor: sentinel2
@@ -93,11 +96,32 @@ raster_layers:
     quality_mask_path: data/prepared/sentinel2/2024-05-15_valid_mask.tif
     role: input_feature
 
+  - id: s2_red_edge_2024_05_15
+    sensor: sentinel2
+    feature_name: red_edge
+    date: 2024-05-15
+    path: data/prepared/sentinel2/2024-05-15_red_edge.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    quality_mask_path: data/prepared/sentinel2/2024-05-15_valid_mask.tif
+    role: input_feature
+
   - id: s1_vv_2024_05_16
     sensor: sentinel1
     feature_name: VV
     date: 2024-05-16
     path: data/prepared/sentinel1/2024-05-16_VV.tif
+    crs: EPSG:32637
+    resolution_m: 10
+    nodata: -9999
+    role: input_feature
+
+  - id: s1_vv_2024_05_01
+    sensor: sentinel1
+    feature_name: VV
+    date: 2024-05-01
+    path: data/prepared/sentinel1/2024-05-01_VV.tif
     crs: EPSG:32637
     resolution_m: 10
     nodata: -9999

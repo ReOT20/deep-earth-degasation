@@ -21,6 +21,9 @@ quality
 notes
 ```
 
+Optional `weather_context` may point to a small prepared YAML file with rain or
+weather events. The pipeline does not download weather data.
+
 ## Raster layer requirements
 
 Each raster layer must have:
@@ -65,6 +68,29 @@ geology
 lineaments
 known_sites
 ```
+
+## Weather context
+
+When event-conditioned features are enabled, add:
+
+```yaml
+weather_context:
+  path: data/context/weather_events.yaml
+```
+
+The referenced YAML uses:
+
+```yaml
+events:
+  - date: "2024-05-10"
+    rainfall_mm: 12.0
+    source_id: prepared_rain_event_1
+    source: prepared
+```
+
+Weather, SAR event-response and post-rain drying outputs are supporting
+context only. Missing weather, red-edge or SAR inputs must become explicit
+missing-data flags rather than silent assumptions.
 
 ## CRS policy
 

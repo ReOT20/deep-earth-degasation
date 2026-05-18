@@ -7,7 +7,10 @@ import numpy as np
 from affine import Affine
 from rasterio.coords import BoundingBox
 
-from deep_earth_degasation.features.sar import sentinel1_features_from_stack
+from deep_earth_degasation.features.sar import (
+    sentinel1_event_response_features,
+    sentinel1_features_from_stack,
+)
 from deep_earth_degasation.features.spectral import (
     compute_brightness,
     compute_bsi,
@@ -19,6 +22,7 @@ from deep_earth_degasation.features.spectral import (
 )
 from deep_earth_degasation.features.thermal import landsat_thermal_features_from_stack
 from deep_earth_degasation.features.types import DynamicFeatureLayer
+from deep_earth_degasation.features.weather import load_weather_context
 from deep_earth_degasation.io.raster_stack import RasterLayer, RasterStack
 from deep_earth_degasation.pipeline.manifest import (
     AOISpec,
@@ -67,6 +71,21 @@ def test_sentinel2_features_from_stack_preserve_provenance_and_missing_optional_
     assert ndvi.evidence_direction == "lower_values_indicate_vegetation_stress"
     assert "missing_sentinel2_red_edge" in result.missing_data_flags
     assert "missing_sentinel2_EVI" in result.missing_data_flags
+
+
+def test_sentinel2_features_from_stack_loads_red_edge_when_present() -> None:
+    stack = _stack(
+        [
+            _layer("s2_red_edge", "sentinel2", "red_edge", "2024-05-15", [[0.1]]),
+            _layer("s2_ndre", "sentinel2", "NDRE", "2024-05-15", [[0.2]]),
+        ]
+    )
+
+    result = sentinel2_features_from_stack(stack)
+
+    assert _feature(result.features, "red_edge").source_layer_ids == ("s2_red_edge",)
+    assert _feature(result.features, "NDRE").source_layer_ids == ("s2_ndre",)
+    assert "missing_sentinel2_red_edge" not in result.missing_data_flags
 
 
 def test_sentinel2_features_from_stack_preserve_all_dates() -> None:
@@ -146,6 +165,38 @@ def test_sentinel1_vv_vh_ratio_does_not_cross_mismatched_dates() -> None:
     assert all(feature.name != "VV_VH_ratio" for feature in result.features)
     assert "missing_sentinel1_VH_for_ratio_2024-05-01" in result.missing_data_flags
     assert "missing_sentinel1_VV_for_ratio_2024-05-15" in result.missing_data_flags
+
+
+def test_sentinel1_event_response_pairs_sar_features_around_weather_event() -> None:
+    sar_result = sentinel1_features_from_stack(
+        _stack(
+            [
+                _layer("vv_before", "sentinel1", "VV", "2024-05-01", [[2.0, 4.0]]),
+                _layer("vv_after", "sentinel1", "VV", "2024-05-15", [[5.0, 1.0]]),
+                _layer("vh_before", "sentinel1", "VH", "2024-05-01", [[1.0, 2.0]]),
+                _layer("vh_after", "sentinel1", "VH", "2024-05-15", [[3.0, 5.0]]),
+            ]
+        )
+    )
+    context = load_weather_context(
+        [{"date": "2024-05-10", "rainfall_mm": 12.0, "source_id": "rain_1"}]
+    )
+
+    result = sentinel1_event_response_features(sar_result.features, context)
+    feature = _feature(result.features, "sar_event_response_VV")
+
+    assert np.allclose(feature.data, np.array([[3.0, 3.0]]))
+    assert feature.date == "2024-05-15"
+    assert feature.source_layer_ids == ("rain_1", "vv_before", "vv_after")
+    assert "not_moisture_proof" in feature.evidence_direction
+    assert result.missing_data_flags == ()
+
+
+def test_sentinel1_event_response_missing_context_is_flagged() -> None:
+    result = sentinel1_event_response_features((), None)
+
+    assert result.features == ()
+    assert result.missing_data_flags == ("missing_weather_context",)
 
 
 def test_sentinel1_missing_inputs_return_flags() -> None:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
+
 import numpy as np
 
 from deep_earth_degasation.features.types import DynamicFeatureLayer, DynamicFeatureResult
+from deep_earth_degasation.features.weather import WeatherContext
 from deep_earth_degasation.io.raster_stack import RasterLayer, RasterStack
 
 SAR_EVIDENCE_DIRECTIONS = {
@@ -10,6 +13,7 @@ SAR_EVIDENCE_DIRECTIONS = {
     "VH": "backscatter_supporting_context",
     "VV_VH_ratio": "higher_or_lower_values_indicate_sar_anomaly",
     "temporal_difference": "larger_absolute_values_indicate_temporal_sar_change",
+    "sar_event_response": "larger_absolute_values_indicate_supporting_sar_event_response_not_moisture_proof",
 }
 
 
@@ -38,6 +42,70 @@ def sentinel1_features_from_stack(stack: RasterStack) -> DynamicFeatureResult:
     return DynamicFeatureResult(features=tuple(features), missing_data_flags=tuple(flags))
 
 
+def sentinel1_event_response_features(
+    sar_features: tuple[DynamicFeatureLayer, ...],
+    context: WeatherContext | None,
+    *,
+    rainfall_threshold_mm: float = 1.0,
+) -> DynamicFeatureResult:
+    """Compute supporting SAR changes around prepared weather events."""
+    if context is None or not context.events:
+        return DynamicFeatureResult(features=(), missing_data_flags=("missing_weather_context",))
+    event_features = tuple(
+        feature
+        for feature in sar_features
+        if feature.sensor.lower() == "sentinel1"
+        and feature.name in {"VV", "VH", "VV_VH_ratio"}
+        and feature.date is not None
+    )
+    if not event_features:
+        return DynamicFeatureResult(
+            features=(), missing_data_flags=("missing_sentinel1_event_response_inputs",)
+        )
+
+    rain_events = [
+        event
+        for event in context.events
+        if event.rainfall_mm is not None and event.rainfall_mm >= rainfall_threshold_mm
+    ]
+    if not rain_events:
+        return DynamicFeatureResult(
+            features=(), missing_data_flags=("missing_prior_rain_event_for_sar_event_response",)
+        )
+
+    features: list[DynamicFeatureLayer] = []
+    flags: list[str] = []
+    by_name = _features_by_name(event_features)
+    for event in rain_events:
+        event_had_pair = False
+        for feature_name, dated_features in by_name.items():
+            before, after = _bracketing_features(dated_features, event.date)
+            if before is None or after is None:
+                continue
+            event_had_pair = True
+            if before.data.shape != after.data.shape:
+                flags.append(f"sar_event_response_shape_mismatch_{event.date}_{feature_name}")
+                continue
+            features.append(
+                DynamicFeatureLayer(
+                    name=f"sar_event_response_{feature_name}",
+                    data=np.abs(after.data - before.data).astype(np.float64),
+                    sensor="sentinel1",
+                    date=after.date,
+                    source_layer_ids=(
+                        event.context_id,
+                        *before.source_layer_ids,
+                        *after.source_layer_ids,
+                    ),
+                    evidence_direction=SAR_EVIDENCE_DIRECTIONS["sar_event_response"],
+                )
+            )
+        if not event_had_pair:
+            flags.append(f"missing_sar_pair_for_event_response_{event.date}")
+
+    return DynamicFeatureResult(features=tuple(features), missing_data_flags=tuple(flags))
+
+
 def vv_vh_ratio_features(
     by_feature: dict[str, list[RasterLayer]],
 ) -> tuple[list[DynamicFeatureLayer], list[str]]:
@@ -47,10 +115,10 @@ def vv_vh_ratio_features(
     features: list[DynamicFeatureLayer] = []
     flags: list[str] = []
 
-    for date in dates:
-        vv = vv_by_date.get(date)
-        vh = vh_by_date.get(date)
-        date_label = "undated" if date is None else date
+    for date_key in dates:
+        vv = vv_by_date.get(date_key)
+        vh = vh_by_date.get(date_key)
+        date_label = "undated" if date_key is None else date_key
         if vv is None:
             flags.append(f"missing_sentinel1_VV_for_ratio_{date_label}")
             continue
@@ -65,7 +133,7 @@ def vv_vh_ratio_features(
                 name="VV_VH_ratio",
                 data=vv.data / (vh.data + 1e-9),
                 sensor="sentinel1",
-                date=date,
+                date=date_key,
                 source_layer_ids=(vv.spec.id, vh.spec.id),
                 evidence_direction=SAR_EVIDENCE_DIRECTIONS["VV_VH_ratio"],
             )
@@ -107,20 +175,21 @@ def _append_prepared_sar(
     feature_name: str,
     flags: list[str],
 ) -> None:
-    layer = _first_layer(by_feature.get(feature_name))
-    if layer is None:
+    layers = by_feature.get(feature_name, [])
+    if not layers:
         flags.append(f"missing_sentinel1_{feature_name}")
         return
-    features.append(
-        DynamicFeatureLayer(
-            name=feature_name,
-            data=layer.data,
-            sensor="sentinel1",
-            date=layer.spec.date,
-            source_layer_ids=(layer.spec.id,),
-            evidence_direction=SAR_EVIDENCE_DIRECTIONS[feature_name],
+    for layer in sorted(layers, key=lambda item: (item.spec.date or "", item.spec.id)):
+        features.append(
+            DynamicFeatureLayer(
+                name=feature_name,
+                data=layer.data,
+                sensor="sentinel1",
+                date=layer.spec.date,
+                source_layer_ids=(layer.spec.id,),
+                evidence_direction=SAR_EVIDENCE_DIRECTIONS[feature_name],
+            )
         )
-    )
 
 
 def _layers_by_feature(layers: list[RasterLayer]) -> dict[str, list[RasterLayer]]:
@@ -137,7 +206,30 @@ def _layers_by_date(layers: list[RasterLayer]) -> dict[str | None, RasterLayer]:
     return by_date
 
 
-def _first_layer(layers: list[RasterLayer] | None) -> RasterLayer | None:
-    if not layers:
-        return None
-    return sorted(layers, key=lambda layer: layer.spec.date or "")[0]
+def _features_by_name(
+    features: tuple[DynamicFeatureLayer, ...],
+) -> dict[str, list[DynamicFeatureLayer]]:
+    by_name: dict[str, list[DynamicFeatureLayer]] = {}
+    for feature in features:
+        by_name.setdefault(feature.name, []).append(feature)
+    return by_name
+
+
+def _bracketing_features(
+    features: list[DynamicFeatureLayer],
+    event_date: str,
+) -> tuple[DynamicFeatureLayer | None, DynamicFeatureLayer | None]:
+    event = date.fromisoformat(event_date)
+    dated = sorted(
+        (feature for feature in features if feature.date is not None),
+        key=lambda feature: feature.date or "",
+    )
+    before = next(
+        (feature for feature in reversed(dated) if date.fromisoformat(feature.date or "") <= event),
+        None,
+    )
+    after = next(
+        (feature for feature in dated if date.fromisoformat(feature.date or "") > event),
+        None,
+    )
+    return before, after
