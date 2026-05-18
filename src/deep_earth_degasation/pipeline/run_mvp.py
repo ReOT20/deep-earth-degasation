@@ -17,6 +17,11 @@ from deep_earth_degasation.anomaly.field_normalization import (
     FieldAnomalyLayer,
     field_normalized_anomaly,
 )
+from deep_earth_degasation.anomaly.residuals import (
+    peer_residual_layers,
+    residual_layers_metadata,
+    temporal_residual_layers,
+)
 from deep_earth_degasation.candidates.dynamic_extractor import (
     DynamicExtractionConfig,
     extract_dynamic_objects_from_composite,
@@ -73,6 +78,8 @@ class DynamicMVPArtifactPaths:
     resolved_config_json: Path
     anomaly_map_npy: Path
     anomaly_map_metadata_json: Path
+    residual_cube_npz: Path
+    residual_metadata_json: Path
 
 
 def run_dynamic_mvp(
@@ -98,10 +105,17 @@ def run_dynamic_mvp(
         config=config,
         reference_layer=reference_layer,
     )
+    residual_layers, residual_flags = _hierarchical_residual_layers(
+        features,
+        anomaly_layers,
+        field_ids,
+        fields,
+        config=config,
+    )
     composite = composite_anomaly_map(anomaly_layers, config.anomaly_components)
     objects = extract_dynamic_objects_from_composite(
         composite,
-        anomaly_layers,
+        residual_layers,
         field_ids,
         transform=reference_layer.transform,
         crs=manifest.crs,
@@ -116,7 +130,7 @@ def run_dynamic_mvp(
             _false_positive_filter_config(config),
         )
         objects = _append_landcover_context(objects, vectors, config)
-        objects = _append_missing_flags(objects, (*feature_flags, *anomaly_flags))
+        objects = _append_missing_flags(objects, (*feature_flags, *anomaly_flags, *residual_flags))
         objects = _append_dynamic_detector_flags(objects, config)
         objects = score_candidate_objects(
             objects,
@@ -142,6 +156,8 @@ def run_dynamic_mvp(
         resolved_config_json=output_dir / "resolved_config.json",
         anomaly_map_npy=output_dir / "anomaly_maps" / "composite_anomaly.npy",
         anomaly_map_metadata_json=output_dir / "anomaly_maps" / "composite_anomaly.json",
+        residual_cube_npz=output_dir / "anomaly_maps" / "hierarchical_residuals.npz",
+        residual_metadata_json=output_dir / "anomaly_maps" / "hierarchical_residuals.json",
     )
     _write_artifacts(
         paths,
@@ -149,6 +165,8 @@ def run_dynamic_mvp(
         stack,
         config,
         composite,
+        residual_layers=residual_layers,
+        residual_flags=residual_flags,
         known_sites=_vector_data(vectors, "known_sites"),
     )
     return paths
@@ -316,6 +334,45 @@ def _field_anomaly_layers(
     if not layers:
         raise ValueError("No field-normalized anomaly layers could be produced.")
     return tuple(layers), tuple(sorted(set(flags)))
+
+
+def _hierarchical_residual_layers(
+    features: tuple[DynamicFeatureLayer, ...],
+    field_layers: tuple[FieldAnomalyLayer, ...],
+    field_ids: np.ndarray,
+    fields: gpd.GeoDataFrame,
+    *,
+    config: MVPConfig,
+) -> tuple[tuple[FieldAnomalyLayer, ...], tuple[str, ...]]:
+    min_valid_pixels = (
+        config.normalization.min_valid_pixels_per_field_date
+        if config.normalization is not None
+        and config.normalization.min_valid_pixels_per_field_date is not None
+        else 1
+    )
+    mad_epsilon = (
+        config.normalization.mad_epsilon
+        if config.normalization is not None and config.normalization.mad_epsilon is not None
+        else 1.0e-6
+    )
+    peer_result = peer_residual_layers(
+        features,
+        field_ids,
+        fields,
+        component_for_feature=lambda feature: _component_for_feature(feature, config),
+        min_valid_pixels=min_valid_pixels,
+        mad_epsilon=mad_epsilon,
+    )
+    temporal_result = temporal_residual_layers(
+        features,
+        component_for_feature=lambda feature: _component_for_feature(feature, config),
+        mad_epsilon=mad_epsilon,
+    )
+    residual_layers = (*field_layers, *peer_result.layers, *temporal_result.layers)
+    flags = tuple(
+        sorted(set(peer_result.missing_data_flags) | set(temporal_result.missing_data_flags))
+    )
+    return residual_layers, flags
 
 
 def _component_for_feature(feature: DynamicFeatureLayer, config: MVPConfig) -> str | None:
@@ -564,9 +621,12 @@ def _write_artifacts(
     config: MVPConfig,
     composite: CompositeAnomalyMap,
     *,
+    residual_layers: tuple[FieldAnomalyLayer, ...],
+    residual_flags: tuple[str, ...],
     known_sites: gpd.GeoDataFrame | None,
 ) -> None:
     paths.anomaly_map_npy.parent.mkdir(parents=True, exist_ok=True)
+    _write_residual_products(paths, residual_layers, residual_flags)
     output_config = config.outputs
     review_limit = max(0, output_config.candidates_top_n)
     passports_dir = paths.passports_dir if output_config.generate_passports else None
@@ -682,6 +742,31 @@ def _write_artifacts(
         + "\n",
         encoding="utf-8",
     )
+
+
+def _write_residual_products(
+    paths: DynamicMVPArtifactPaths,
+    residual_layers: tuple[FieldAnomalyLayer, ...],
+    residual_flags: tuple[str, ...],
+) -> None:
+    arrays = {
+        f"{index:03d}_{_safe_layer_name(layer.name)}_{layer.residual_type}": layer.data
+        for index, layer in enumerate(residual_layers, start=1)
+    }
+    np.savez_compressed(paths.residual_cube_npz, **arrays)
+    paths.residual_metadata_json.write_text(
+        json.dumps(
+            residual_layers_metadata(residual_layers, missing_data_flags=residual_flags),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _safe_layer_name(name: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name)
 
 
 def _clear_generated_files(directory: Path, pattern: str) -> None:

@@ -60,6 +60,8 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     run_manifest = output_dir / "run_manifest.json"
     resolved_config = output_dir / "resolved_config.json"
     anomaly_map = output_dir / "anomaly_maps" / "composite_anomaly.npy"
+    residual_cube = output_dir / "anomaly_maps" / "hierarchical_residuals.npz"
+    residual_metadata_path = output_dir / "anomaly_maps" / "hierarchical_residuals.json"
 
     for path in (
         candidates_geojson,
@@ -70,6 +72,8 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
         run_manifest,
         resolved_config,
         anomaly_map,
+        residual_cube,
+        residual_metadata_path,
     ):
         assert path.exists()
     assert passports_dir.is_dir()
@@ -81,6 +85,8 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert score_rows[0]["object_score"] != ""
     assert score_rows[0]["dynamic_score"] != ""
     assert score_rows[0]["field_id"] == "plot-1"
+    assert score_rows[0]["field_residual_max"] != ""
+    assert "field" in score_rows[0]["residual_types_present"]
     assert score_rows[0]["moisture_anomaly"] != ""
     assert score_rows[0]["false_positive_flags"] != ""
     assert score_rows[0]["missing_data_flags"] != ""
@@ -127,6 +133,13 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert candidate_data["features"][0]["properties"]["passport_path"].endswith(".md")
     assert list(time_series_dir.glob("*.csv"))
     assert np.load(anomaly_map).shape == (10, 10)
+    residual_metadata = json.loads(residual_metadata_path.read_text(encoding="utf-8"))
+    assert residual_metadata["schema_version"] == "hierarchical_residuals.v1"
+    assert "missing_peer_residual_context" in residual_metadata["missing_data_flags"]
+    assert "missing_temporal_residual_context" in residual_metadata["missing_data_flags"]
+    assert {layer["residual_type"] for layer in residual_metadata["layers"]} == {"field"}
+    with np.load(residual_cube) as residuals:
+        assert residuals.files
 
     stale_passport = passports_dir / "dynamic-object-999999.md"
     stale_time_series = time_series_dir / "dynamic-object-999999.csv"
@@ -267,6 +280,57 @@ def test_run_mvp_assigns_landcover_from_manifest_layer(tmp_path: Path) -> None:
     assert row["landcover_branch"] == "forest"
     assert "landcover_context_assumed_cropland_fields" not in row["missing_data_flags"]
     assert "missing_forest_branch_scoring" in row["missing_data_flags"]
+
+
+def test_run_mvp_reports_peer_and_temporal_residuals_when_context_exists(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    manifest_path = _write_prepared_data(tmp_path)
+    fields_path = tmp_path / "fields.geojson"
+    _write_vector(
+        fields_path,
+        {
+            "plot_code": ["plot-west", "plot-east"],
+            "crop_type": ["wheat", "wheat"],
+            "phenology_stage": ["early", "early"],
+        },
+        [box(0, 0, 50, 100), box(50, 0, 100, 100)],
+    )
+    late_ndmi = np.full((10, 10), 0.6, dtype=np.float32)
+    late_ndmi[4:7, 4:7] = 0.02
+    _write_raster(tmp_path / "ndmi_late.tif", late_ndmi)
+    _update_manifest(
+        manifest_path,
+        lambda manifest: manifest["raster_layers"].append(
+            _layer("ndmi_late", "NDMI", "ndmi_late.tif", date="2024-06-15")
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+
+    result = runner.invoke(
+        app,
+        [
+            "run-mvp",
+            "--config",
+            str(config_path),
+            "--data-manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    row = _read_csv_rows(output_dir / "candidate_scores.csv")[0]
+    assert "peer" in row["residual_types_present"]
+    assert "temporal" in row["residual_types_present"]
+    assert row["peer_residual_max"] != ""
+    assert row["temporal_residual_max"] != ""
+    metadata = json.loads(
+        (output_dir / "anomaly_maps" / "hierarchical_residuals.json").read_text(encoding="utf-8")
+    )
+    assert {"field", "peer", "temporal"}.issubset(
+        {layer["residual_type"] for layer in metadata["layers"]}
+    )
 
 
 def test_required_empty_vector_files_still_fail(tmp_path: Path) -> None:
@@ -760,12 +824,18 @@ def _write_raster(path: Path, data: np.ndarray) -> None:
         dataset.write(data, 1)
 
 
-def _layer(layer_id: str, feature_name: str, filename: str) -> dict[str, object]:
+def _layer(
+    layer_id: str,
+    feature_name: str,
+    filename: str,
+    *,
+    date: str = "2024-05-15",
+) -> dict[str, object]:
     return {
         "id": layer_id,
         "sensor": "sentinel2",
         "feature_name": feature_name,
-        "date": "2024-05-15",
+        "date": date,
         "path": filename,
         "crs": CRS,
         "resolution_m": 10,

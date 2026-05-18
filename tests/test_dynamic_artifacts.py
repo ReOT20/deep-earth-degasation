@@ -42,6 +42,10 @@ def test_dynamic_candidate_scores_include_review_evidence_and_passport_paths(
     assert rows[0]["landcover_branch"] == "cropland"
     assert rows[0]["field_id"] == "field-7"
     assert rows[0]["support_pixel_count"] == "7"
+    assert rows[0]["field_residual_max"] == "3.2"
+    assert rows[0]["peer_residual_max"] == "2.4"
+    assert rows[0]["temporal_residual_max"] == "1.6"
+    assert rows[0]["residual_types_present"] == '["field","peer","temporal"]'
     assert rows[0]["annulus_contrast"] == "0.45"
     assert rows[0]["ringness_score"] == "0.35"
     assert rows[0]["false_positive_flags"] == '["road_risk"]'
@@ -75,6 +79,10 @@ def test_dynamic_candidate_geojson_preserves_scores_flags_and_source_evidence(
     assert properties["dominant_evidence"] == "cropland dynamic anomaly with static morphology"
     assert properties["false_positive_flags"] == ["road_risk"]
     assert properties["support_pixel_count"] == 7
+    assert properties["field_residual_max"] == 3.2
+    assert properties["peer_residual_max"] == 2.4
+    assert properties["temporal_residual_max"] == 1.6
+    assert properties["residual_types_present"] == ["field", "peer", "temporal"]
     assert properties["annulus_contrast"] == 0.45
     assert properties["ringness_score"] == 0.35
     assert properties["missing_data_flags"] == ["missing_context_water"]
@@ -107,6 +115,7 @@ def test_dynamic_score_rows_feed_labeling_and_enriched_passports() -> None:
     passport = render_candidate_passport(score_row)
 
     assert labeling_row["object_score"] == "0.91"
+    assert labeling_row["residual_types_present"] == '["field","peer","temporal"]'
     assert labeling_row["missing_data_flags"] == '["missing_context_water"]'
     assert labeling_row["anomalous_dates"] == '["2023-05-01","2024-05-01"]'
     assert labeling_row["source_feature_names"] == '["BSI","NDMI","NDVI","VV_VH_ratio"]'
@@ -188,6 +197,10 @@ def _candidate_objects() -> gpd.GeoDataFrame:
                 "distance_to_field_edge_m": 35.0,
                 "area_m2": 1200.0,
                 "support_pixel_count": 7,
+                "field_residual_max": 3.2,
+                "peer_residual_max": 2.4,
+                "temporal_residual_max": 1.6,
+                "residual_types_present": ("field", "peer", "temporal"),
                 "equivalent_diameter_m": 39.1,
                 "circularity": 0.82,
                 "elongation": 1.4,

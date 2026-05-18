@@ -274,6 +274,10 @@ def _object_row(
         "max_anomaly": stats.max_anomaly,
         "per_feature_mean": stats.per_feature_mean,
         "per_feature_max": stats.per_feature_max,
+        "field_residual_max": stats.per_residual_type_max.get("field", float("nan")),
+        "peer_residual_max": stats.per_residual_type_max.get("peer", float("nan")),
+        "temporal_residual_max": stats.per_residual_type_max.get("temporal", float("nan")),
+        "residual_types_present": tuple(sorted(stats.per_residual_type_max)),
         "source_feature_names": stats.source_feature_names,
         "source_layer_ids": stats.source_layer_ids,
         "anomalous_dates": stats.anomalous_dates,
@@ -338,6 +342,9 @@ def _merged_row(
     )
     per_feature_mean = _merge_feature_stats(group, "per_feature_mean")
     per_feature_max = _merge_feature_stats(group, "per_feature_max", use_max=True)
+    residual_types_present = tuple(
+        sorted({residual_type for row in group for residual_type in row["residual_types_present"]})
+    )
     return {
         **group[0],
         "object_id": object_id,
@@ -355,6 +362,10 @@ def _merged_row(
         "max_anomaly": float(np.nanmax([row["max_anomaly"] for row in group])),
         "per_feature_mean": per_feature_mean,
         "per_feature_max": per_feature_max,
+        "field_residual_max": _merge_numeric_max(group, "field_residual_max"),
+        "peer_residual_max": _merge_numeric_max(group, "peer_residual_max"),
+        "temporal_residual_max": _merge_numeric_max(group, "temporal_residual_max"),
+        "residual_types_present": residual_types_present,
         "source_feature_names": tuple(
             sorted({name for row in group for name in row["source_feature_names"]})
         ),
@@ -409,6 +420,11 @@ def _merge_feature_stats(
         values = [row[field_name][feature_name] for row in group if feature_name in row[field_name]]
         stats[feature_name] = float(np.nanmax(values) if use_max else np.nanmean(values))
     return stats
+
+
+def _merge_numeric_max(group: list[dict[str, Any]], field_name: str) -> float:
+    values = [float(row[field_name]) for row in group if np.isfinite(float(row[field_name]))]
+    return float(np.nanmax(values)) if values else float("nan")
 
 
 def _object_flags(

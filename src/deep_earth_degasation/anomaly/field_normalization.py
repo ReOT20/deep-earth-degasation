@@ -20,6 +20,7 @@ class FieldAnomalyLayer:
     source_feature_names: tuple[str, ...]
     source_layer_ids: tuple[str, ...]
     evidence_direction: str
+    residual_type: str = "field"
     missing_data_flags: tuple[str, ...] = ()
 
 
@@ -67,6 +68,7 @@ def field_normalized_anomaly(
         source_feature_names=(feature.name,),
         source_layer_ids=feature.source_layer_ids,
         evidence_direction="higher_values_indicate_stronger_local_anomaly_support",
+        residual_type="field",
         missing_data_flags=tuple(flags),
     )
 

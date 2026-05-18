@@ -13,6 +13,7 @@ class ObjectZonalStats:
     max_anomaly: float
     per_feature_mean: dict[str, float]
     per_feature_max: dict[str, float]
+    per_residual_type_max: dict[str, float]
     source_feature_names: tuple[str, ...]
     source_layer_ids: tuple[str, ...]
     anomalous_dates: tuple[str, ...]
@@ -27,6 +28,7 @@ def compute_object_zonal_stats(
     per_feature_mean: dict[str, float] = {}
     per_feature_max: dict[str, float] = {}
     per_feature_values: dict[str, list[np.ndarray]] = {}
+    per_residual_type_values: dict[str, list[np.ndarray]] = {}
     source_feature_names: set[str] = set()
     source_layer_ids: set[str] = set()
     dates: set[str] = set()
@@ -41,8 +43,10 @@ def compute_object_zonal_stats(
         positive_values = valid_values[valid_values > 0]
         for feature_name in layer.source_feature_names:
             source_feature_names.add(feature_name)
-            if valid_values.size:
+            if valid_values.size and layer.residual_type == "field":
                 per_feature_values.setdefault(feature_name, []).append(valid_values)
+        if valid_values.size:
+            per_residual_type_values.setdefault(layer.residual_type, []).append(valid_values)
         source_layer_ids.update(layer.source_layer_ids)
         if positive_values.size:
             supporting_observation_count += 1
@@ -56,12 +60,17 @@ def compute_object_zonal_stats(
         per_feature_mean[feature_name] = _nan_stat(merged_feature_values, stat="mean")
         per_feature_max[feature_name] = _nan_stat(merged_feature_values, stat="max")
 
+    per_residual_type_max = {
+        residual_type: _nan_stat(np.concatenate(value_chunks), stat="max")
+        for residual_type, value_chunks in per_residual_type_values.items()
+    }
     merged_values = np.concatenate(object_values) if object_values else np.array([], dtype=float)
     return ObjectZonalStats(
         mean_anomaly=_nan_stat(merged_values, stat="mean"),
         max_anomaly=_nan_stat(merged_values, stat="max"),
         per_feature_mean=per_feature_mean,
         per_feature_max=per_feature_max,
+        per_residual_type_max=per_residual_type_max,
         source_feature_names=tuple(sorted(source_feature_names)),
         source_layer_ids=tuple(sorted(source_layer_ids)),
         anomalous_dates=tuple(sorted(dates)),

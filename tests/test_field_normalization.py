@@ -52,6 +52,7 @@ def test_lower_value_stress_features_become_positive_local_anomalies() -> None:
 
     assert anomaly.data[0, 3] > 1.0
     assert anomaly.component == "moisture"
+    assert anomaly.residual_type == "field"
     assert anomaly.source_feature_names == ("NDMI",)
     assert anomaly.source_layer_ids == ("NDMI_layer",)
 
