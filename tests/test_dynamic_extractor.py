@@ -123,6 +123,100 @@ def test_composite_blob_becomes_one_candidate_with_per_feature_stats() -> None:
     assert row["per_feature_max"]["NDVI"] == 8.0
 
 
+def test_composite_multiscale_recovers_elliptical_anomaly_extent() -> None:
+    data = _blank(height=16, width=18)
+    rows, cols = np.ogrid[:16, :18]
+    ellipse = ((rows - 8) / 3.0) ** 2 + ((cols - 9) / 5.0) ** 2 <= 1.0
+    core = ((rows - 8) / 1.6) ** 2 + ((cols - 9) / 2.2) ** 2 <= 1.0
+    data[ellipse] = 4.0
+    data[core] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=100.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    assert objects["support_pixel_count"].iloc[0] >= int(np.count_nonzero(ellipse)) * 0.8
+    assert objects["elongation"].iloc[0] > 1.2
+
+
+def test_composite_support_percentile_zero_grows_over_all_positive_support() -> None:
+    data = _blank()
+    data[4:7, 4:7] = 1.0
+    data[5, 5] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=DynamicExtractionConfig(
+            anomaly_percentile=99.0,
+            support_percentile=0.0,
+            min_support_pixels=1,
+            min_area_m2=1.0,
+            min_diameter_m=1.0,
+            max_area_m2=50_000.0,
+            max_diameter_m=300.0,
+        ),
+    )
+
+    assert len(objects) == 1
+    assert objects["support_pixel_count"].iloc[0] == 9
+
+
+def test_composite_boundary_support_survives_gap_bridging() -> None:
+    data = _blank()
+    data[0, 0] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=DynamicExtractionConfig(
+            anomaly_percentile=99.0,
+            min_support_pixels=1,
+            min_area_m2=1.0,
+            min_diameter_m=1.0,
+            max_area_m2=50_000.0,
+            max_diameter_m=300.0,
+        ),
+    )
+
+    assert len(objects) == 1
+    assert objects["support_pixel_count"].iloc[0] == 1
+
+
+def test_composite_recovers_chain_anomaly_as_single_proposal() -> None:
+    data = _blank(height=14, width=14)
+    for row, col in ((4, 4), (5, 5), (6, 6), (7, 7), (8, 8)):
+        data[row, col] = 9.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=50.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    assert objects["support_pixel_count"].iloc[0] == 5
+
+
 def test_composite_stats_aggregate_repeated_feature_dates_without_overwrite() -> None:
     early_ndmi = _blank()
     later_ndmi = _blank()
@@ -241,6 +335,30 @@ def test_partial_ring_has_annulus_evidence() -> None:
     assert len(objects) == 1
     assert objects["annulus_contrast"].iloc[0] > 0
     assert objects["ringness_score"].iloc[0] > 0
+
+
+def test_fragmented_partial_ring_is_proposed_as_one_object() -> None:
+    data = _blank(height=15, width=15)
+    data[6, 4:7] = 8.0
+    data[5, 8:11] = 8.0
+    data[8, 4:7] = 8.0
+    data[9, 8:11] = 8.0
+    data[6, 7] = 10.0
+    data[8, 7] = 10.0
+    fields = np.ones(data.shape, dtype=int)
+
+    objects = extract_dynamic_objects_from_composite(
+        _composite(data),
+        (_layer("NDMI", data),),
+        fields,
+        transform=TRANSFORM,
+        crs=CRS,
+        config=_config(min_area_m2=100.0, min_diameter_m=5.0),
+    )
+
+    assert len(objects) == 1
+    assert objects["support_pixel_count"].iloc[0] > 8
+    assert objects["annulus_contrast"].iloc[0] > 0
 
 
 def test_broad_field_patch_is_flagged() -> None:

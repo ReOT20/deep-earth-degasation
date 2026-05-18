@@ -9,7 +9,7 @@ import geopandas as gpd
 import numpy as np
 from affine import Affine
 from rasterio.features import shapes
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_closing, binary_dilation, distance_transform_edt
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 from skimage.measure import label, regionprops
@@ -120,7 +120,11 @@ def _extract_dynamic_objects_from_layers(
 
     detections: list[dict[str, Any]] = []
     for layer in detection_layers:
-        detection_labels = _field_local_labels(layer.data, field_ids, extraction_config)
+        detection_labels = (
+            _field_local_labels(layer.data, field_ids, extraction_config)
+            if merge_detections
+            else _field_multiscale_proposal_labels(layer.data, field_ids, extraction_config)
+        )
         for region in regionprops(detection_labels):
             component_mask = detection_labels == region.label
             geometry = _component_geometry(component_mask, transform)
@@ -208,6 +212,159 @@ def _field_local_labels(
             labels[component_mask] = next_label
             next_label += 1
     return labels
+
+
+def _field_multiscale_proposal_labels(
+    data: FloatArray,
+    field_ids: np.ndarray,
+    config: DynamicExtractionConfig,
+) -> np.ndarray:
+    labels = np.zeros(data.shape, dtype=np.int32)
+    next_label = 1
+    for field_id in _unique_field_ids(field_ids):
+        field_mask = field_ids == field_id
+        positive_support_mask = field_mask & np.isfinite(data) & (data > 0)
+        values = data[positive_support_mask]
+        if values.size == 0:
+            continue
+
+        seed_threshold = float(np.nanpercentile(values, config.anomaly_percentile))
+        seed_mask = positive_support_mask & (data >= seed_threshold)
+        seed_labels = np.asarray(label(seed_mask, connectivity=config.connectivity))
+        if int(seed_labels.max()) == 0:
+            continue
+
+        candidate_masks: list[np.ndarray] = []
+        for threshold in _proposal_thresholds(values, config):
+            support_mask = positive_support_mask & (data >= threshold)
+            support_mask = _bridge_support_gaps(support_mask, field_mask)
+            candidate_masks.extend(_seeded_support_masks(support_mask, seed_labels, data, config))
+        candidate_masks.extend(
+            _annular_support_masks(data, positive_support_mask, seed_labels, values, config)
+        )
+
+        for candidate_mask in _dedupe_proposal_masks(candidate_masks):
+            candidate_mask = candidate_mask & (labels == 0)
+            if int(np.count_nonzero(candidate_mask)) < config.min_support_pixels:
+                continue
+            labels[candidate_mask] = next_label
+            next_label += 1
+    return labels
+
+
+def _proposal_thresholds(values: np.ndarray, config: DynamicExtractionConfig) -> tuple[float, ...]:
+    support_percentile = (
+        config.anomaly_percentile
+        if config.support_percentile is None
+        else min(config.support_percentile, config.anomaly_percentile)
+    )
+    percentiles = {support_percentile}
+    percentiles.add(max(50.0, config.anomaly_percentile - 10.0))
+    percentiles.add(max(40.0, config.anomaly_percentile - 20.0))
+    thresholds = {float(np.nanpercentile(values, percentile)) for percentile in percentiles}
+    return tuple(sorted(thresholds, reverse=True))
+
+
+def _bridge_support_gaps(support_mask: np.ndarray, field_mask: np.ndarray) -> np.ndarray:
+    if not np.any(support_mask):
+        return support_mask
+    structure = np.ones((3, 3), dtype=bool)
+    closed_mask = np.asarray(binary_closing(support_mask, structure=structure), dtype=bool)
+    return (closed_mask | support_mask) & field_mask
+
+
+def _seeded_support_masks(
+    support_mask: np.ndarray,
+    seed_labels: np.ndarray,
+    data: FloatArray,
+    config: DynamicExtractionConfig,
+) -> list[np.ndarray]:
+    support_labels = np.asarray(label(support_mask, connectivity=config.connectivity))
+    if int(support_labels.max()) == 0:
+        return []
+
+    nearest_seed_labels = _nearest_seed_labels(seed_labels)
+    candidate_masks: list[np.ndarray] = []
+    for component_label in range(1, int(support_labels.max()) + 1):
+        component_mask = support_labels == component_label
+        seed_ids = sorted(set(seed_labels[component_mask]) - {0})
+        if not seed_ids:
+            continue
+        if len(seed_ids) == 1:
+            candidate_masks.append(component_mask)
+            continue
+        annulus_contrast, ring_score = _ring_evidence(data, component_mask)
+        if annulus_contrast > 0 and ring_score > 0 and _mask_bbox_aspect(component_mask) <= 2.0:
+            candidate_masks.append(component_mask)
+            continue
+        for seed_id in seed_ids:
+            split_mask = component_mask & (nearest_seed_labels == seed_id)
+            if int(np.count_nonzero(split_mask)) >= config.min_support_pixels:
+                candidate_masks.append(split_mask)
+    return candidate_masks
+
+
+def _nearest_seed_labels(seed_labels: np.ndarray) -> np.ndarray:
+    if int(seed_labels.max()) == 0:
+        return np.zeros(seed_labels.shape, dtype=np.int32)
+    _, nearest_indices = distance_transform_edt(seed_labels == 0, return_indices=True)
+    return seed_labels[tuple(nearest_indices)]
+
+
+def _mask_bbox_aspect(mask: np.ndarray) -> float:
+    rows, cols = np.nonzero(mask)
+    if rows.size == 0 or cols.size == 0:
+        return float("inf")
+    height = int(rows.max() - rows.min() + 1)
+    width = int(cols.max() - cols.min() + 1)
+    return max(height, width) / max(1, min(height, width))
+
+
+def _annular_support_masks(
+    data: FloatArray,
+    positive_support_mask: np.ndarray,
+    seed_labels: np.ndarray,
+    values: np.ndarray,
+    config: DynamicExtractionConfig,
+) -> list[np.ndarray]:
+    if int(seed_labels.max()) == 0:
+        return []
+
+    threshold = float(np.nanpercentile(values, max(40.0, config.anomaly_percentile - 25.0)))
+    relaxed_support = positive_support_mask & (data >= threshold)
+    if not np.any(relaxed_support):
+        return []
+
+    candidate_masks: list[np.ndarray] = []
+    search_iterations = max(2, min(6, round(np.sqrt(config.min_support_pixels)) + 1))
+    for seed_id in range(1, int(seed_labels.max()) + 1):
+        seed_mask = seed_labels == seed_id
+        local_window = binary_dilation(seed_mask, iterations=search_iterations)
+        local_support = np.asarray(local_window, dtype=bool) & relaxed_support
+        if int(np.count_nonzero(local_support)) < config.min_support_pixels:
+            continue
+        candidate = _bridge_support_gaps(local_support, positive_support_mask)
+        annulus_contrast, ring_score = _ring_evidence(data, candidate)
+        if annulus_contrast > 0 and ring_score > 0:
+            candidate_masks.append(candidate)
+    return candidate_masks
+
+
+def _dedupe_proposal_masks(candidate_masks: list[np.ndarray]) -> list[np.ndarray]:
+    kept: list[np.ndarray] = []
+    for candidate_mask in sorted(candidate_masks, key=np.count_nonzero, reverse=True):
+        candidate_size = int(np.count_nonzero(candidate_mask))
+        if candidate_size == 0:
+            continue
+        if any(
+            int(np.count_nonzero(candidate_mask & kept_mask))
+            / max(1, min(candidate_size, int(np.count_nonzero(kept_mask))))
+            >= 0.8
+            for kept_mask in kept
+        ):
+            continue
+        kept.append(candidate_mask)
+    return kept
 
 
 def _support_threshold(values: np.ndarray, config: DynamicExtractionConfig) -> float:
