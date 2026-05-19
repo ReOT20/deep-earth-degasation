@@ -52,6 +52,8 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
 
     candidates_geojson = output_dir / "candidates.geojson"
     candidate_scores_csv = output_dir / "candidate_scores.csv"
+    object_feature_table_csv = output_dir / "object_feature_table.csv"
+    rank_explanations_csv = output_dir / "rank_explanations.csv"
     labeling_table_csv = output_dir / "labeling_table.csv"
     learning_dataset_csv = output_dir / "learning_dataset.csv"
     validation_summary_json = output_dir / "validation_summary.json"
@@ -66,6 +68,8 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     for path in (
         candidates_geojson,
         candidate_scores_csv,
+        object_feature_table_csv,
+        rank_explanations_csv,
         labeling_table_csv,
         learning_dataset_csv,
         validation_summary_json,
@@ -93,6 +97,21 @@ def test_run_mvp_cli_writes_dynamic_artifact_set(tmp_path: Path) -> None:
     assert score_rows[0]["landcover_branch"] == "cropland"
     assert "landcover_context_assumed_cropland_fields" in score_rows[0]["missing_data_flags"]
     assert score_rows[0]["passport_path"].endswith(".md")
+
+    with object_feature_table_csv.open(newline="", encoding="utf-8") as file:
+        object_feature_rows = list(csv.DictReader(file))
+    assert object_feature_rows[0]["candidate_id"] == score_rows[0]["candidate_id"]
+    assert object_feature_rows[0]["rank"] == score_rows[0]["rank"]
+    assert object_feature_rows[0]["field_residual_max"] == score_rows[0]["field_residual_max"]
+    assert object_feature_rows[0]["road_distance_m"] == score_rows[0]["road_distance_m"]
+
+    with rank_explanations_csv.open(newline="", encoding="utf-8") as file:
+        explanation_rows = list(csv.DictReader(file))
+    assert explanation_rows[0]["candidate_id"] == score_rows[0]["candidate_id"]
+    assert explanation_rows[0]["rank"] == score_rows[0]["rank"]
+    assert "false_positive_distances" in explanation_rows[0]
+    assert "Candidate requires expert and field validation" in explanation_rows[0]["explanation"]
+    assert "not direct H2 detection" in explanation_rows[0]["explanation"]
 
     validation_summary = json.loads(validation_summary_json.read_text(encoding="utf-8"))
     assert "not direct H2 detections" in validation_summary["guardrail"]
@@ -382,6 +401,8 @@ def test_run_mvp_output_toggles_control_artifacts(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert not (output_dir / "candidates.geojson").exists()
     assert not (output_dir / "candidate_scores.csv").exists()
+    assert not (output_dir / "object_feature_table.csv").exists()
+    assert not (output_dir / "rank_explanations.csv").exists()
     assert not (output_dir / "validation_summary.json").exists()
     assert not (output_dir / "resolved_config.json").exists()
     assert not list((output_dir / "passports").glob("*.md"))

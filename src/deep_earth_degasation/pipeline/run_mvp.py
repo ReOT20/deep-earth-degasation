@@ -54,6 +54,10 @@ from deep_earth_degasation.io.candidates import (
 from deep_earth_degasation.io.labeling import write_labeling_table
 from deep_earth_degasation.io.raster_stack import RasterLayer, RasterStack, load_raster_stack
 from deep_earth_degasation.io.raster_stack import write_run_manifest as write_raster_run_manifest
+from deep_earth_degasation.io.review_exports import (
+    write_object_feature_table,
+    write_rank_explanations,
+)
 from deep_earth_degasation.io.vector import VectorDataError, VectorLayer, load_vector_layer
 from deep_earth_degasation.learning.dataset import write_learning_dataset
 from deep_earth_degasation.pipeline.manifest import PreparedStackManifest
@@ -76,6 +80,8 @@ class DynamicMVPArtifactPaths:
     output_dir: Path
     candidates_geojson: Path
     candidate_scores_csv: Path
+    object_feature_table_csv: Path
+    rank_explanations_csv: Path
     labeling_table_csv: Path
     learning_dataset_csv: Path
     validation_summary_json: Path
@@ -154,6 +160,8 @@ def run_dynamic_mvp(
         output_dir=output_dir,
         candidates_geojson=output_dir / "candidates.geojson",
         candidate_scores_csv=output_dir / "candidate_scores.csv",
+        object_feature_table_csv=output_dir / "object_feature_table.csv",
+        rank_explanations_csv=output_dir / "rank_explanations.csv",
         labeling_table_csv=output_dir / "labeling_table.csv",
         learning_dataset_csv=output_dir / "learning_dataset.csv",
         validation_summary_json=output_dir / "validation_summary.json",
@@ -753,8 +761,12 @@ def _write_artifacts(
             passports_dir=passports_dir,
             passport_path_limit=review_limit,
         )
+        write_object_feature_table(score_rows, paths.object_feature_table_csv)
+        write_rank_explanations(score_rows, paths.rank_explanations_csv)
     else:
         _unlink_if_exists(paths.candidate_scores_csv)
+        _unlink_if_exists(paths.object_feature_table_csv)
+        _unlink_if_exists(paths.rank_explanations_csv)
 
     write_labeling_table(review_score_rows, paths.labeling_table_csv)
     write_learning_dataset(
