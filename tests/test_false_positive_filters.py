@@ -53,6 +53,17 @@ def test_spatial_context_layers_add_false_positive_flags_and_penalties() -> None
         "road_risk",
     ]
     assert filtered["false_positive_penalty"].iloc[0] == pytest.approx(1.45)
+    assert filtered["road_distance_m"].iloc[0] == pytest.approx(2.0)
+    assert filtered["built_up_distance_m"].iloc[0] == pytest.approx(0.0)
+    assert filtered["quarry_distance_m"].iloc[0] == pytest.approx(0.0)
+    profile = filtered["false_positive_profile"].iloc[0]
+    assert profile["road_distance_m"] == pytest.approx(2.0)
+    assert profile["flags"] == [
+        "built_up_risk",
+        "excluded_zone_risk",
+        "quarry_risk",
+        "road_risk",
+    ]
 
 
 def test_woody_patch_context_adds_false_positive_flag_and_penalty() -> None:
@@ -134,7 +145,7 @@ def test_field_edge_and_linear_object_risks_use_existing_object_columns() -> Non
 
 def test_missing_enabled_context_layers_add_missing_data_flags() -> None:
     filtered = apply_false_positive_filters(
-        _objects([box(0, 0, 10, 10)]),
+        _objects([box(0, 0, 10, 10)], missing_flags=[["missing_component_thermal"]]),
         FalsePositiveContext(),
         FalsePositiveFilterConfig(
             flag_roads=True,
@@ -151,9 +162,61 @@ def test_missing_enabled_context_layers_add_missing_data_flags() -> None:
 
     assert filtered["false_positive_flags"].iloc[0] == []
     assert filtered["missing_data_flags"].iloc[0] == [
+        "missing_component_thermal",
         "missing_context_roads",
         "missing_context_water",
     ]
+    assert filtered["false_positive_profile"].iloc[0]["missing_context"] == ["roads", "water"]
+
+
+def test_shape_profile_flags_small_objects_and_broad_patches() -> None:
+    filtered = apply_false_positive_filters(
+        _objects(
+            [box(0, 0, 10, 10)],
+            support_pixels=[5],
+            dynamic_flags=[["broad_patch"]],
+        ),
+        FalsePositiveContext(),
+        FalsePositiveFilterConfig(
+            flag_roads=False,
+            flag_water=False,
+            flag_built_up=False,
+            flag_excluded_zones=False,
+            flag_quarries=False,
+            flag_woody_patches=False,
+            flag_cloud_shadows=False,
+            flag_harvest_patterns=False,
+            flag_irrigation=False,
+        ),
+    )
+
+    assert filtered["false_positive_flags"].iloc[0] == ["broad_patch_risk", "small_object_risk"]
+    profile = filtered["false_positive_profile"].iloc[0]
+    assert profile["support_pixel_count"] == 5
+    assert profile["flags"] == ["broad_patch_risk", "small_object_risk"]
+
+
+def test_missing_support_pixel_count_does_not_trigger_small_object_profile() -> None:
+    filtered = apply_false_positive_filters(
+        _objects([box(0, 0, 10, 10)], support_pixels=[float("nan")]),
+        FalsePositiveContext(),
+        FalsePositiveFilterConfig(
+            flag_roads=False,
+            flag_water=False,
+            flag_built_up=False,
+            flag_excluded_zones=False,
+            flag_quarries=False,
+            flag_woody_patches=False,
+            flag_cloud_shadows=False,
+            flag_harvest_patterns=False,
+            flag_irrigation=False,
+        ),
+    )
+
+    assert "small_object_risk" not in filtered["false_positive_flags"].iloc[0]
+    profile = filtered["false_positive_profile"].iloc[0]
+    assert profile["support_pixel_count"] is None
+    assert "small_object_risk" not in profile["flags"]
 
 
 def test_disabled_context_layers_do_not_add_missing_data_flags() -> None:
@@ -255,9 +318,15 @@ def test_context_false_positive_flags_flow_to_dynamic_review_artifacts(tmp_path:
     geojson = json.loads(geojson_path.read_text(encoding="utf-8"))
     csv_text = scores_path.read_text(encoding="utf-8")
     assert geojson["features"][0]["properties"]["false_positive_flags"] == ["road_risk"]
+    assert geojson["features"][0]["properties"]["road_distance_m"] == 2.0
+    assert geojson["features"][0]["properties"]["false_positive_profile"]["flags"] == ["road_risk"]
     assert '"road_risk"' in csv_text
+    assert "false_positive_profile" in csv_text
     assert labeling_row["false_positive_flags"] == '["road_risk"]'
+    assert "road_distance_m" in labeling_row
+    assert "false_positive_profile" in labeling_row
     assert "road_risk" in passport
+    assert "false_positive_profile" in passport
 
 
 def _objects(
@@ -266,6 +335,9 @@ def _objects(
     near_field_edge: list[bool] | None = None,
     distances: list[float] | None = None,
     elongations: list[float] | None = None,
+    support_pixels: list[int | float] | None = None,
+    dynamic_flags: list[list[str]] | None = None,
+    missing_flags: list[list[str]] | None = None,
 ) -> gpd.GeoDataFrame:
     count = len(geometries)
     return gpd.GeoDataFrame(
@@ -274,6 +346,9 @@ def _objects(
             "near_field_edge": near_field_edge or [False] * count,
             "distance_to_field_edge_m": distances or [100.0] * count,
             "elongation": elongations or [1.0] * count,
+            "support_pixel_count": support_pixels or [100] * count,
+            "dynamic_object_flags": dynamic_flags or [[] for _ in range(count)],
+            "missing_data_flags": missing_flags or [[] for _ in range(count)],
             "geometry": geometries,
         },
         geometry="geometry",

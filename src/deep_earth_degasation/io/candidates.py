@@ -30,6 +30,18 @@ SOURCE_CONTEXT_FIELD_MAP = {
     "notes": "source_notes",
 }
 
+FALSE_POSITIVE_PROFILE_FIELDS = [
+    "road_distance_m",
+    "built_up_distance_m",
+    "water_distance_m",
+    "quarry_distance_m",
+    "woody_patch_distance_m",
+    "irrigation_distance_m",
+    "cloud_shadow_distance_m",
+    "harvest_pattern_distance_m",
+    "excluded_zone_distance_m",
+]
+
 SCORE_FIELDNAMES = [
     "rank",
     "priority_class",
@@ -67,6 +79,8 @@ SCORE_FIELDNAMES = [
     "post_rain_drying",
     "geology_context",
     "false_positive_penalty",
+    *FALSE_POSITIVE_PROFILE_FIELDS,
+    "false_positive_profile",
     "evidence",
     "flags",
     "dominant_evidence",
@@ -168,6 +182,7 @@ def candidate_object_to_feature(
             "dynamic_object_flags": _object_list(candidate, "dynamic_object_flags"),
             "false_positive_flags": false_positive_flags,
             "false_positive_penalty": _object_score_value(candidate, "false_positive_penalty"),
+            **_object_false_positive_profile_fields(candidate),
             "missing_data_flags": _object_list(candidate, "missing_data_flags"),
             "anomalous_dates": _object_list(candidate, "anomalous_dates"),
             "source_feature_names": _object_list(candidate, "source_feature_names"),
@@ -226,6 +241,10 @@ def candidate_object_to_score_row(
         "post_rain_drying": dynamic_evidence["post_rain_drying"],
         "geology_context": dynamic_evidence["geology_context"],
         "false_positive_penalty": _object_score_value(candidate, "false_positive_penalty"),
+        **_object_false_positive_profile_score_fields(candidate),
+        "false_positive_profile": _json_string(
+            _object_json_value(candidate, "false_positive_profile")
+        ),
         "evidence": _json_string(
             {"evidence_class": _text(_object_value(candidate, "evidence_class"))}
         ),
@@ -496,6 +515,29 @@ def _object_list(candidate: Any, key: str) -> list[str]:
     if isinstance(value, Iterable):
         return sorted(str(item) for item in value)
     return [str(value)]
+
+
+def _object_json_value(candidate: Any, key: str) -> object:
+    value = _object_value(candidate, key)
+    if value is None or _is_nan(value):
+        return {}
+    return value
+
+
+def _object_false_positive_profile_fields(candidate: Any) -> dict[str, object]:
+    fields: dict[str, object] = {
+        field_name: _object_score_value(candidate, field_name)
+        for field_name in FALSE_POSITIVE_PROFILE_FIELDS
+    }
+    fields["false_positive_profile"] = _object_json_value(candidate, "false_positive_profile")
+    return fields
+
+
+def _object_false_positive_profile_score_fields(candidate: Any) -> dict[str, str | float]:
+    return {
+        field_name: _object_score_value(candidate, field_name)
+        for field_name in FALSE_POSITIVE_PROFILE_FIELDS
+    }
 
 
 def _is_nan(value: object) -> bool:

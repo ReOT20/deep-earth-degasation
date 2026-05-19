@@ -99,6 +99,7 @@ def render_candidate_passport(score_row: Mapping[str, object]) -> str:
             "",
             f"- `false_positive_flags`: {false_positive_flags}",
             f"- `false_positive_penalty`: {_text(score_row, 'false_positive_penalty')}",
+            f"- `false_positive_profile`: {_text(score_row, 'false_positive_profile')}",
             f"- `missing_data_flags`: {missing_data_flags}",
             "- `false_positive_reason`: ",
             "- `reviewer_notes`: ",

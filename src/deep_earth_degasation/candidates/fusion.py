@@ -17,6 +17,19 @@ class CandidateFusionConfig:
     centroid_distance_max_m: float = 50.0
 
 
+FALSE_POSITIVE_PROFILE_FIELDS = (
+    "road_distance_m",
+    "built_up_distance_m",
+    "water_distance_m",
+    "quarry_distance_m",
+    "woody_patch_distance_m",
+    "irrigation_distance_m",
+    "cloud_shadow_distance_m",
+    "harvest_pattern_distance_m",
+    "excluded_zone_distance_m",
+)
+
+
 def fuse_static_dynamic_candidates(
     static_candidates: list[StaticCandidate],
     dynamic_objects: gpd.GeoDataFrame,
@@ -167,6 +180,8 @@ def _dynamic_fields(dynamic_row: Any) -> dict[str, Any]:
         "repeated_seasons": _row_value(dynamic_row, "repeated_seasons"),
         "false_positive_flags": tuple(_list_value(dynamic_row, "false_positive_flags")),
         "false_positive_penalty": _float_value(dynamic_row, "false_positive_penalty", default=0.0),
+        "false_positive_profile": _dict_value(dynamic_row, "false_positive_profile"),
+        **_false_positive_distance_fields(dynamic_row),
         "missing_data_flags": tuple(_list_value(dynamic_row, "missing_data_flags")),
     }
 
@@ -188,6 +203,11 @@ def _empty_dynamic_fields() -> dict[str, Any]:
         "source_layer_ids": (),
         "source_detection_count": None,
         "repeated_seasons": None,
+        "false_positive_flags": (),
+        "false_positive_penalty": 0.0,
+        "false_positive_profile": {},
+        **{field_name: None for field_name in FALSE_POSITIVE_PROFILE_FIELDS},
+        "missing_data_flags": (),
     }
 
 
@@ -211,6 +231,10 @@ def _list_value(row: Any, field_name: str) -> tuple[Any, ...]:
 def _dict_value(row: Any, field_name: str) -> dict[Any, Any]:
     value = _row_value(row, field_name)
     return value if isinstance(value, dict) else {}
+
+
+def _false_positive_distance_fields(row: Any) -> dict[str, Any]:
+    return {field_name: _row_value(row, field_name) for field_name in FALSE_POSITIVE_PROFILE_FIELDS}
 
 
 def _float_value(row: Any, field_name: str, *, default: float) -> float:
@@ -261,6 +285,8 @@ def _empty_fused_candidates(crs: str | None) -> gpd.GeoDataFrame:
             "repeated_seasons": [],
             "false_positive_flags": [],
             "false_positive_penalty": [],
+            "false_positive_profile": [],
+            **{field_name: [] for field_name in FALSE_POSITIVE_PROFILE_FIELDS},
             "missing_data_flags": [],
             "geometry": [],
         },

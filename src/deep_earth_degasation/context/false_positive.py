@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -42,6 +43,7 @@ class FalsePositiveFilterConfig:
     woody_patch_buffer_m: float = 20.0
     field_edge_buffer_m: float = 20.0
     max_elongation_without_penalty: float = 4.0
+    small_object_max_support_pixels: int = 12
     penalties: dict[str, float] = field(
         default_factory=lambda: {
             "field_edge": 0.20,
@@ -66,6 +68,7 @@ class _SpatialRisk:
     penalty_key: str
     enabled: bool
     buffer_m: float
+    distance_field: str
 
 
 def apply_false_positive_filters(
@@ -81,21 +84,32 @@ def apply_false_positive_filters(
     all_flags: list[list[str]] = []
     all_missing_flags: list[list[str]] = []
     penalties: list[float] = []
+    profiles: list[dict[str, object]] = []
+    distances_by_field: dict[str, list[float | None]] = {
+        risk.distance_field: [] for risk in _spatial_risks(filter_config)
+    }
 
     for _, row in output.iterrows():
         geometry = cast(BaseGeometry, row.geometry)
         flags: list[str] = []
-        missing_flags: list[str] = []
+        missing_flags = _existing_missing_flags(row)
         penalty = 0.0
+        profile: dict[str, object] = {}
 
         for risk in _spatial_risks(filter_config):
             if not risk.enabled:
+                distances_by_field[risk.distance_field].append(None)
                 continue
             layer = getattr(context, risk.context_name)
             if layer is None:
                 missing_flags.append(f"missing_context_{risk.context_name}")
+                profile[f"{risk.context_name}_context"] = "missing"
+                distances_by_field[risk.distance_field].append(None)
                 continue
             _require_compatible_crs(objects, layer, risk.context_name)
+            distance = _nearest_context_distance_m(geometry, layer)
+            distances_by_field[risk.distance_field].append(distance)
+            profile[risk.distance_field] = distance
             if _intersects_context(geometry, layer, buffer_m=risk.buffer_m):
                 flags.append(risk.flag)
                 penalty += filter_config.penalties.get(risk.penalty_key, 0.0)
@@ -106,27 +120,58 @@ def apply_false_positive_filters(
         if filter_config.flag_linear_objects and _has_linear_object_risk(row, filter_config):
             flags.append("linear_object_risk")
             penalty += filter_config.penalties.get("linear_object", 0.0)
+        if _has_small_object_risk(row, filter_config):
+            flags.append("small_object_risk")
+        if _has_broad_patch_risk(row):
+            flags.append("broad_patch_risk")
 
-        all_flags.append(sorted(set(flags)))
-        all_missing_flags.append(sorted(set(missing_flags)))
+        final_flags = sorted(set(flags))
+        final_missing_flags = sorted(set(missing_flags))
+        profile["flags"] = final_flags
+        profile["missing_context"] = [
+            flag.removeprefix("missing_context_")
+            for flag in final_missing_flags
+            if flag.startswith("missing_context_")
+        ]
+        profile["distance_to_field_edge_m"] = _optional_float(
+            _row_value(row, "distance_to_field_edge_m")
+        )
+        profile["elongation"] = _optional_float(_row_value(row, "elongation"))
+        profile["support_pixel_count"] = _optional_int(_row_value(row, "support_pixel_count"))
+        all_flags.append(final_flags)
+        all_missing_flags.append(final_missing_flags)
         penalties.append(round(penalty, 10))
+        profiles.append(profile)
 
     output["false_positive_flags"] = all_flags
     output["false_positive_penalty"] = penalties
     output["missing_data_flags"] = all_missing_flags
+    for field_name, values in distances_by_field.items():
+        output[field_name] = values
+    output["false_positive_profile"] = profiles
     return output
 
 
 def _spatial_risks(config: FalsePositiveFilterConfig) -> tuple[_SpatialRisk, ...]:
     return (
-        _SpatialRisk("roads", "road_risk", "road", config.flag_roads, config.road_buffer_m),
-        _SpatialRisk("water", "water_risk", "water", config.flag_water, config.water_buffer_m),
+        _SpatialRisk(
+            "roads", "road_risk", "road", config.flag_roads, config.road_buffer_m, "road_distance_m"
+        ),
+        _SpatialRisk(
+            "water",
+            "water_risk",
+            "water",
+            config.flag_water,
+            config.water_buffer_m,
+            "water_distance_m",
+        ),
         _SpatialRisk(
             "built_up",
             "built_up_risk",
             "built_up",
             config.flag_built_up,
             config.builtup_buffer_m,
+            "built_up_distance_m",
         ),
         _SpatialRisk(
             "excluded_zones",
@@ -134,14 +179,23 @@ def _spatial_risks(config: FalsePositiveFilterConfig) -> tuple[_SpatialRisk, ...
             "excluded_zone",
             config.flag_excluded_zones,
             0.0,
+            "excluded_zone_distance_m",
         ),
-        _SpatialRisk("quarries", "quarry_risk", "quarry", config.flag_quarries, 0.0),
+        _SpatialRisk(
+            "quarries",
+            "quarry_risk",
+            "quarry",
+            config.flag_quarries,
+            0.0,
+            "quarry_distance_m",
+        ),
         _SpatialRisk(
             "woody_patches",
             "woody_patch_risk",
             "woody_patch",
             config.flag_woody_patches,
             config.woody_patch_buffer_m,
+            "woody_patch_distance_m",
         ),
         _SpatialRisk(
             "cloud_shadows",
@@ -149,6 +203,7 @@ def _spatial_risks(config: FalsePositiveFilterConfig) -> tuple[_SpatialRisk, ...
             "cloud_shadow",
             config.flag_cloud_shadows,
             0.0,
+            "cloud_shadow_distance_m",
         ),
         _SpatialRisk(
             "harvest_patterns",
@@ -156,8 +211,16 @@ def _spatial_risks(config: FalsePositiveFilterConfig) -> tuple[_SpatialRisk, ...
             "harvest_pattern",
             config.flag_harvest_patterns,
             0.0,
+            "harvest_pattern_distance_m",
         ),
-        _SpatialRisk("irrigation", "irrigation_risk", "irrigation", config.flag_irrigation, 0.0),
+        _SpatialRisk(
+            "irrigation",
+            "irrigation_risk",
+            "irrigation",
+            config.flag_irrigation,
+            0.0,
+            "irrigation_distance_m",
+        ),
     )
 
 
@@ -169,6 +232,18 @@ def _intersects_context(
         prepared_geometry.intersects(cast(BaseGeometry, context_geometry))
         for context_geometry in context_layer.geometry
     )
+
+
+def _nearest_context_distance_m(
+    geometry: BaseGeometry, context_layer: gpd.GeoDataFrame
+) -> float | None:
+    distances = [
+        geometry.distance(cast(BaseGeometry, context_geometry))
+        for context_geometry in context_layer.geometry
+    ]
+    if not distances:
+        return None
+    return round(float(min(distances)), 6)
 
 
 def _has_field_edge_risk(row: object, config: FalsePositiveFilterConfig) -> bool:
@@ -187,6 +262,33 @@ def _has_linear_object_risk(row: object, config: FalsePositiveFilterConfig) -> b
     return elongation > config.max_elongation_without_penalty
 
 
+def _has_small_object_risk(row: object, config: FalsePositiveFilterConfig) -> bool:
+    support_pixels = _optional_int(_row_value(row, "support_pixel_count"))
+    if support_pixels is None:
+        return False
+    return support_pixels <= config.small_object_max_support_pixels
+
+
+def _has_broad_patch_risk(row: object) -> bool:
+    flags = _row_value(row, "dynamic_object_flags")
+    if isinstance(flags, str):
+        return flags == "broad_patch"
+    if isinstance(flags, list | tuple | set):
+        return "broad_patch" in {str(flag) for flag in flags}
+    return False
+
+
+def _existing_missing_flags(row: object) -> list[str]:
+    value = _row_value(row, "missing_data_flags")
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list | tuple | set):
+        return [str(flag) for flag in value]
+    return []
+
+
 def _row_value(row: Any, key: str) -> object | None:
     if hasattr(row, "index") and key in row.index:
         return row[key]
@@ -198,6 +300,18 @@ def _optional_float(value: object | None) -> float | None:
         return None
     if isinstance(value, int | float):
         return float(value)
+    return None
+
+
+def _optional_int(value: object | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return int(value)
     return None
 
 

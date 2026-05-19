@@ -95,6 +95,9 @@ def test_fusion_preserves_false_positive_filter_outputs() -> None:
     dynamic_objects = _dynamic_objects([("dynamic-match", Point(20, 0).buffer(25), 3.0)])
     dynamic_objects["false_positive_flags"] = [["road_risk"]]
     dynamic_objects["false_positive_penalty"] = [0.3]
+    dynamic_objects["false_positive_profile"] = [{"flags": ["road_risk"], "road_distance_m": 2.0}]
+    dynamic_objects["road_distance_m"] = [2.0]
+    dynamic_objects["woody_patch_distance_m"] = [None]
     dynamic_objects["missing_data_flags"] = [["missing_context_water"]]
 
     fused = fuse_static_dynamic_candidates(static_candidates, dynamic_objects, crs=CRS)
@@ -102,6 +105,9 @@ def test_fusion_preserves_false_positive_filter_outputs() -> None:
     matched = fused[fused["evidence_class"] == "static_dynamic"].iloc[0]
     assert matched["false_positive_flags"] == ("built_up_risk", "road_risk")
     assert matched["false_positive_penalty"] == 0.3
+    assert matched["false_positive_profile"] == {"flags": ["road_risk"], "road_distance_m": 2.0}
+    assert matched["road_distance_m"] == 2.0
+    assert matched["woody_patch_distance_m"] is None
     assert matched["missing_data_flags"] == ("missing_context_water",)
 
 
